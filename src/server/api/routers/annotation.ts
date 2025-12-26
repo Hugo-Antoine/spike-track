@@ -120,7 +120,7 @@ export const annotationRouter = createTRPCRouter({
       const nextFrameQuery = await ctx.db.execute(sql`
         SELECT frame_num
         FROM generate_series(
-          ${progress.lastAnnotatedFrame + 1}::integer,
+          0::integer,
           ${video.totalFrames - 1}::integer
         ) AS frame_num
         WHERE NOT EXISTS (
@@ -286,6 +286,170 @@ export const annotationRouter = createTRPCRouter({
       }
 
       return { success: true };
+    }),
+
+  /**
+   * Save multiple annotations in batch
+   */
+  saveBatch: protectedProcedure
+    .input(
+      z.object({
+        videoId: z.string().uuid(),
+        annotations: z.array(
+          z.object({
+            frameNumber: z.number(),
+            x: z.number().min(0).max(1).optional(),
+            y: z.number().min(0).max(1).optional(),
+            ballVisible: z.boolean(),
+          })
+        ),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const userId = ctx.session.user.id;
+
+      // Validate all annotations
+      for (const ann of input.annotations) {
+        if (ann.ballVisible && (ann.x === undefined || ann.y === undefined)) {
+          throw new Error(
+            `Frame ${ann.frameNumber}: x and y required when ball is visible`
+          );
+        }
+      }
+
+      // Insert all annotations (UPSERT)
+      for (const ann of input.annotations) {
+        await ctx.db
+          .insert(annotations)
+          .values({
+            videoId: input.videoId,
+            userId,
+            frameNumber: ann.frameNumber,
+            x: ann.ballVisible ? ann.x : null,
+            y: ann.ballVisible ? ann.y : null,
+            ballVisible: ann.ballVisible,
+          })
+          .onConflictDoUpdate({
+            target: [
+              annotations.videoId,
+              annotations.userId,
+              annotations.frameNumber,
+            ],
+            set: {
+              x: ann.ballVisible ? ann.x : null,
+              y: ann.ballVisible ? ann.y : null,
+              ballVisible: ann.ballVisible,
+              updatedAt: new Date(),
+            },
+          });
+      }
+
+      // Update progress once for all annotations
+      const currentProgress = await ctx.db.query.userVideoProgress.findFirst({
+        where: and(
+          eq(userVideoProgress.userId, userId),
+          eq(userVideoProgress.videoId, input.videoId)
+        ),
+      });
+
+      if (currentProgress) {
+        const annotationsCount = await ctx.db.execute(sql`
+          SELECT COUNT(*)::integer as count
+          FROM ${annotations}
+          WHERE ${annotations.videoId} = ${input.videoId}
+            AND ${annotations.userId} = ${userId}
+        `);
+
+        const totalAnnotated = (annotationsCount[0] as { count: number }).count;
+
+        const maxFrame = Math.max(
+          ...input.annotations.map((a) => a.frameNumber),
+          currentProgress.lastAnnotatedFrame
+        );
+
+        await ctx.db
+          .update(userVideoProgress)
+          .set({
+            lastAnnotatedFrame: maxFrame,
+            totalAnnotated,
+            lastActivity: new Date(),
+          })
+          .where(
+            and(
+              eq(userVideoProgress.userId, userId),
+              eq(userVideoProgress.videoId, input.videoId)
+            )
+          );
+      }
+
+      return { success: true, count: input.annotations.length };
+    }),
+
+  /**
+   * Get specific frame data (for navigation)
+   */
+  getFrame: protectedProcedure
+    .input(
+      z.object({
+        videoId: z.string().uuid(),
+        frameNumber: z.number(),
+      })
+    )
+    .query(async ({ ctx, input }) => {
+      const userId = ctx.session.user.id;
+
+      // Get video
+      const video = await ctx.db.query.videos.findFirst({
+        where: eq(videos.id, input.videoId),
+      });
+
+      if (!video) {
+        throw new Error("Video not found");
+      }
+
+      // Check if this frame is already annotated
+      const existingAnnotation = await ctx.db.query.annotations.findFirst({
+        where: and(
+          eq(annotations.videoId, input.videoId),
+          eq(annotations.userId, userId),
+          eq(annotations.frameNumber, input.frameNumber)
+        ),
+      });
+
+      // Get last 5 visible annotations
+      const previousAnnotations = await ctx.db.query.annotations.findMany({
+        where: and(
+          eq(annotations.videoId, input.videoId),
+          eq(annotations.userId, userId),
+          eq(annotations.ballVisible, true)
+        ),
+        orderBy: [desc(annotations.frameNumber)],
+        limit: 5,
+        columns: {
+          frameNumber: true,
+          x: true,
+          y: true,
+        },
+      });
+
+      const imageUrl = getFrameUrl(video.cloudinaryFolder, input.frameNumber);
+
+      return {
+        frameNumber: input.frameNumber,
+        imageUrl,
+        annotation: existingAnnotation
+          ? {
+              x: existingAnnotation.x,
+              y: existingAnnotation.y,
+              ballVisible: existingAnnotation.ballVisible,
+            }
+          : null,
+        previousAnnotations: previousAnnotations.map((a) => ({
+          frameNumber: a.frameNumber,
+          x: a.x!,
+          y: a.y!,
+        })),
+      };
     }),
 
   /**
