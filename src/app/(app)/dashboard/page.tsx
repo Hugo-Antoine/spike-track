@@ -2,18 +2,20 @@
 
 import Link from "next/link";
 import { api } from "~/trpc/react";
-import { Card } from "~/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "~/components/ui/card";
 import { Button } from "~/components/ui/button";
 import { Badge } from "~/components/ui/badge";
-import { PlayCircle, CheckCircle2, Video } from "lucide-react";
+import { Skeleton } from "~/components/ui/skeleton";
+import { PlayCircle, CheckCircle2, Video, BarChart3 } from "lucide-react";
 
 export default function DashboardPage() {
   const { data: progressData, isLoading } = api.annotation.getMyProgress.useQuery();
 
   if (isLoading) {
     return (
-      <div className="flex min-h-screen items-center justify-center">
-        <p>Loading...</p>
+      <div className="container mx-auto space-y-8 py-8">
+        <Skeleton className="h-32 w-full" />
+        <Skeleton className="h-64 w-full" />
       </div>
     );
   }
@@ -28,10 +30,48 @@ export default function DashboardPage() {
 
   const { current, available, completed } = progressData;
 
+  // Calculate personal stats
+  const videosInProgress = current ? 1 : 0;
+  const videosCompleted = completed.length;
+  const totalAnnotated = completed.reduce(
+    (sum, v) => sum + v.totalAnnotated,
+    current?.totalAnnotated ?? 0
+  );
+
   return (
     <main className="min-h-screen">
       <div className="container mx-auto px-4 py-8">
         <h1 className="mb-8 text-4xl font-bold">Annotation Dashboard</h1>
+
+        {/* Personal Stats */}
+        <section className="mb-12">
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <BarChart3 className="h-5 w-5" />
+                Vos statistiques
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-3 gap-4">
+                <div className="text-center">
+                  <p className="text-3xl font-bold">{videosInProgress}</p>
+                  <p className="text-sm text-muted-foreground">vidéo en cours</p>
+                </div>
+                <div className="text-center">
+                  <p className="text-3xl font-bold">{videosCompleted}</p>
+                  <p className="text-sm text-muted-foreground">
+                    vidéo{videosCompleted > 1 ? "s" : ""} terminée{videosCompleted > 1 ? "s" : ""}
+                  </p>
+                </div>
+                <div className="text-center">
+                  <p className="text-3xl font-bold">{totalAnnotated}</p>
+                  <p className="text-sm text-muted-foreground">frames annotées au total</p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        </section>
 
         {/* Current Video Section */}
         {current && (
