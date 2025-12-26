@@ -8,14 +8,19 @@ import { AnnotationControls } from "~/app/_components/annotation/AnnotationContr
 import { AnnotationStats } from "~/app/_components/annotation/AnnotationStats";
 import { Button } from "~/components/ui/button";
 import { Card } from "~/components/ui/card";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "~/components/ui/alert-dialog";
 import { PartyPopper } from "lucide-react";
 import { useToast } from "~/hooks/use-toast";
-import { getFrameUrlClient } from "~/lib/cloudinary";
-
-interface Point {
-  x: number;
-  y: number;
-}
+import { useAnnotationBuffer } from "~/hooks/use-annotation-buffer";
 
 export default function AnnotatePage({
   params,
@@ -23,155 +28,180 @@ export default function AnnotatePage({
   params: Promise<{ videoId: string }>;
 }) {
   const resolvedParams = use(params);
-  const videoId = parseInt(resolvedParams.videoId, 10);
+  const videoId = resolvedParams.videoId;
   const router = useRouter();
   const { toast } = useToast();
   const utils = api.useUtils();
 
-  const [currentPoint, setCurrentPoint] = useState<Point | null>(null);
-  const [noBall, setNoBall] = useState(false);
+  const [currentFrame, setCurrentFrame] = useState(0);
+  const [isCompleted, setIsCompleted] = useState(false);
+  const [showNavigationWarning, setShowNavigationWarning] = useState(false);
+  const [pendingNavigation, setPendingNavigation] = useState<string | null>(null);
 
-  // Optimistic frame state for instant UI updates
-  const [optimisticFrame, setOptimisticFrame] = useState<{
-    frameNumber: number;
-    imageUrl: string;
-  } | null>(null);
+  // Annotation buffer
+  const { buffer, addToBuffer, manualSave, pendingCount, isSaving } =
+    useAnnotationBuffer({ videoId });
 
   // Queries
-  const { data: frameData, refetch: refetchFrame } =
-    api.annotation.getNextFrame.useQuery(
-      { videoId },
-      {
-        refetchOnWindowFocus: false,
-        staleTime: 0, // Always fetch fresh data
-      }
-    );
-
-  const { data: stats, refetch: refetchStats } =
-    api.annotation.getStats.useQuery(
-      { videoId },
-      {
-        refetchInterval: 5000, // Refetch every 5 seconds
-        refetchOnWindowFocus: false,
-      }
-    );
-
   const { data: video } = api.video.getById.useQuery({ id: videoId });
 
-  // Mutation
-  const saveAnnotation = api.annotation.saveAnnotation.useMutation({
-    onSuccess: async () => {
-      toast.success("Annotation saved successfully");
-      // Clear optimistic state - server data will take over
-      setOptimisticFrame(null);
-      // Invalidate and refetch to ensure fresh data
-      await utils.annotation.getNextFrame.invalidate({ videoId });
-      await utils.annotation.getStats.invalidate({ videoId });
-      setCurrentPoint(null);
-      setNoBall(false);
-    },
-    onError: (error) => {
-      toast.error(error.message);
-      // Revert optimistic update on error
-      setOptimisticFrame(null);
-      setCurrentPoint(null);
-      setNoBall(false);
-    },
-  });
+  const { data: frameData, refetch: refetchFrame } = api.annotation.getFrame.useQuery(
+    { videoId, frameNumber: currentFrame },
+    { enabled: !!video }
+  );
 
-  // Keyboard handlers
+  const { data: stats, refetch: refetchStats } = api.annotation.getStats.useQuery(
+    { videoId },
+    { refetchInterval: 5000, enabled: !!video }
+  );
+
+  const { data: nextUnannotated } = api.annotation.getNextFrame.useQuery(
+    { videoId },
+    { enabled: !!video }
+  );
+
+  // Check if all frames are annotated
+  useEffect(() => {
+    if (nextUnannotated?.completed) {
+      setIsCompleted(true);
+    }
+  }, [nextUnannotated]);
+
+  // Navigation avec buffer check
+  const navigateTo = (path: string) => {
+    if (pendingCount > 0) {
+      setPendingNavigation(path);
+      setShowNavigationWarning(true);
+    } else {
+      router.push(path);
+    }
+  };
+
+  const handleSaveAndNavigate = async () => {
+    await manualSave();
+    if (pendingNavigation) {
+      router.push(pendingNavigation);
+    }
+  };
+
+  const handleNavigateWithoutSaving = () => {
+    if (pendingNavigation) {
+      router.push(pendingNavigation);
+    }
+  };
+
+  // Keyboard shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (saveAnnotation.isPending) return;
-
-      // Ignore if focus is in input/textarea
       const target = e.target as HTMLElement;
       if (target.tagName === "INPUT" || target.tagName === "TEXTAREA") return;
 
-      switch (e.key.toLowerCase()) {
-        case "a":
-          handleSaveAndNext();
-          break;
-        case "z":
-          handleNoBall();
-          break;
-        case "delete":
-          handleDelete();
-          break;
-        case "e":
-          handleSave();
-          break;
+      // Ctrl+S for manual save
+      if (e.ctrlKey && e.key === "s") {
+        e.preventDefault();
+        void manualSave();
+        return;
+      }
+
+      // Navigation shortcuts
+      if (e.shiftKey) {
+        switch (e.key.toLowerCase()) {
+          case "a":
+            e.preventDefault();
+            handlePrevUnannotated();
+            break;
+          case "e":
+            e.preventDefault();
+            handleNextUnannotated();
+            break;
+        }
+      } else {
+        switch (e.key.toLowerCase()) {
+          case "a":
+            e.preventDefault();
+            handlePrevFrame();
+            break;
+          case "e":
+            e.preventDefault();
+            handleNextFrame();
+            break;
+          case "z":
+            e.preventDefault();
+            handleNoBall();
+            break;
+        }
       }
     };
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [currentPoint, noBall, saveAnnotation.isPending, frameData]);
+  }, [currentFrame, video, manualSave]);
 
-  const handleDelete = () => {
-    setCurrentPoint(null);
-    setNoBall(false);
+  // Handlers
+  const handleAnnotate = (x: number, y: number) => {
+    addToBuffer({
+      frameNumber: currentFrame,
+      x,
+      y,
+      ballVisible: true,
+    });
+
+    // Navigate to next unannotated frame
+    if (nextUnannotated && !nextUnannotated.completed) {
+      setCurrentFrame(nextUnannotated.frameNumber!);
+    }
   };
 
   const handleNoBall = () => {
-    if (!frameData || frameData.completed || !video) return;
-
-    setCurrentPoint(null);
-    setNoBall(true);
-
-    // Optimistic update: show next frame immediately
-    const nextFrameNumber = frameData.frameNumber! + 1;
-    if (nextFrameNumber < video.totalFrames) {
-      setOptimisticFrame({
-        frameNumber: nextFrameNumber,
-        imageUrl: getFrameUrlClient(video.cloudinaryFolder, nextFrameNumber),
-      });
-    }
-
-    // Auto-save when marking no ball
-    saveAnnotation.mutate({
-      videoId,
-      frameNumber: frameData.frameNumber!,
+    addToBuffer({
+      frameNumber: currentFrame,
       ballVisible: false,
     });
+
+    // Navigate to next unannotated frame
+    if (nextUnannotated && !nextUnannotated.completed) {
+      setCurrentFrame(nextUnannotated.frameNumber!);
+    }
   };
 
-  const handleSave = () => {
-    if (!frameData || frameData.completed || !video) return;
-
-    if (!currentPoint && !noBall) {
-      toast.error("Please mark the ball position or select 'No ball'");
-      return;
+  const handlePrevFrame = () => {
+    if (currentFrame > 0) {
+      setCurrentFrame(currentFrame - 1);
     }
+  };
 
-    // Optimistic update: show next frame immediately
-    const nextFrameNumber = frameData.frameNumber! + 1;
-    if (nextFrameNumber < video.totalFrames) {
-      setOptimisticFrame({
-        frameNumber: nextFrameNumber,
-        imageUrl: getFrameUrlClient(video.cloudinaryFolder, nextFrameNumber),
-      });
+  const handleNextFrame = () => {
+    if (video && currentFrame < video.totalFrames - 1) {
+      setCurrentFrame(currentFrame + 1);
     }
+  };
 
-    saveAnnotation.mutate({
-      videoId,
-      frameNumber: frameData.frameNumber!,
-      x: currentPoint?.x,
-      y: currentPoint?.y,
-      ballVisible: !noBall,
+  const handlePrevUnannotated = () => {
+    // Find previous unannotated frame
+    // TODO: Implement with new API query
+    toast({
+      title: "Fonction en développement",
+      description: "Navigation vers frame non annotée précédente",
     });
   };
 
-  const handleSaveAndNext = () => {
-    if (!currentPoint && !noBall) {
-      toast.error("Please mark the ball position or select 'No ball'");
-      return;
+  const handleNextUnannotated = () => {
+    if (nextUnannotated && !nextUnannotated.completed) {
+      setCurrentFrame(nextUnannotated.frameNumber!);
     }
-    handleSave();
   };
 
-  // Loading state
-  if (!frameData || !stats || !video) {
+  const handleMarkCompleted = async () => {
+    // TODO: Implement mark as completed mutation
+    toast({
+      title: "Vidéo marquée comme terminée",
+      description: "Vous pouvez retourner au dashboard",
+    });
+    router.push("/dashboard");
+  };
+
+  // Loading
+  if (!video || !frameData || !stats) {
     return (
       <div className="flex min-h-screen items-center justify-center">
         <p>Loading...</p>
@@ -179,68 +209,109 @@ export default function AnnotatePage({
     );
   }
 
-  // Completion state
-  if (frameData.completed) {
+  // Completion screen
+  if (isCompleted) {
     return (
       <div className="flex min-h-screen items-center justify-center">
-        <Card className="p-12 text-center">
+        <Card className="p-12 text-center max-w-md">
           <PartyPopper className="mx-auto mb-6 h-16 w-16 text-green-500" />
-          <h1 className="mb-4 text-3xl font-bold">Congratulations!</h1>
+          <h1 className="mb-4 text-3xl font-bold">Toutes les frames annotées !</h1>
           <p className="mb-8 text-muted-foreground">
-            You have completed annotating all frames for this video.
+            Vous avez annoté toutes les frames de cette vidéo. Vous pouvez vérifier
+            votre travail ou marquer la vidéo comme terminée.
           </p>
-          <Button
-            size="lg"
-            onClick={() => router.push("/dashboard")}
-            className="w-full"
-          >
-            Return to Dashboard
-          </Button>
+          <div className="flex flex-col gap-2">
+            <Button size="lg" onClick={handleMarkCompleted} className="w-full">
+              Marquer comme terminé
+            </Button>
+            <Button
+              size="lg"
+              variant="outline"
+              onClick={() => setIsCompleted(false)}
+              className="w-full"
+            >
+              Continuer la vérification
+            </Button>
+          </div>
         </Card>
       </div>
     );
   }
 
-  // Use optimistic frame if available, otherwise use server data
-  const displayFrame = optimisticFrame || {
-    frameNumber: frameData.frameNumber!,
-    imageUrl: frameData.imageUrl!,
-  };
-
   return (
-    <main className="flex h-[calc(100vh-3rem)] flex-col bg-background">
-      {/* Stats Header */}
-      <AnnotationStats
-        currentFrame={stats.currentFrame}
-        totalFrames={stats.totalFrames}
-        annotated={stats.annotated}
-        percentComplete={stats.percentComplete}
-        sessionDuration={stats.sessionDuration}
-      />
-
-      {/* Canvas */}
-      <div className="flex-1 overflow-hidden">
-        <AnnotationCanvas
-          key={displayFrame.frameNumber} // Force remount when frame changes
-          imageUrl={displayFrame.imageUrl}
-          frameNumber={displayFrame.frameNumber}
-          cloudinaryFolder={video.cloudinaryFolder}
+    <>
+      <main className="flex h-screen flex-col bg-background">
+        {/* Stats Header */}
+        <AnnotationStats
+          currentFrame={currentFrame}
           totalFrames={video.totalFrames}
-          previousAnnotations={frameData.previousAnnotations ?? []}
-          currentPoint={noBall ? null : currentPoint}
-          onPointChange={setCurrentPoint}
+          annotated={stats.annotated}
+          isAnnotated={frameData.annotation !== null}
+          isCompleted={isCompleted}
         />
-      </div>
 
-      {/* Controls Footer */}
-      <AnnotationControls
-        hasPoint={!!currentPoint || noBall}
-        onDelete={handleDelete}
-        onNoBall={handleNoBall}
-        onSave={handleSave}
-        onSaveAndNext={handleSaveAndNext}
-        disabled={saveAnnotation.isPending}
-      />
-    </main>
+        {/* Canvas */}
+        <div className="flex-1 overflow-hidden">
+          <AnnotationCanvas
+            key={currentFrame}
+            imageUrl={frameData.imageUrl}
+            frameNumber={currentFrame}
+            cloudinaryFolder={video.cloudinaryFolder}
+            totalFrames={video.totalFrames}
+            previousAnnotations={frameData.previousAnnotations}
+            currentAnnotation={frameData.annotation}
+            onAnnotate={handleAnnotate}
+            isAnnotated={frameData.annotation !== null}
+          />
+        </div>
+
+        {/* Controls Footer */}
+        <AnnotationControls
+          onPrevFrame={handlePrevFrame}
+          onNextFrame={handleNextFrame}
+          onPrevUnannotated={handlePrevUnannotated}
+          onNextUnannotated={handleNextUnannotated}
+          onNoBall={handleNoBall}
+          onManualSave={manualSave}
+          pendingCount={pendingCount}
+          isSaving={isSaving}
+          disabled={false}
+        />
+      </main>
+
+      {/* Navigation Warning Dialog */}
+      <AlertDialog open={showNavigationWarning} onOpenChange={setShowNavigationWarning}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Annotations non sauvegardées</AlertDialogTitle>
+            <AlertDialogDescription>
+              Vous avez {pendingCount} annotation(s) en attente. Voulez-vous les sauvegarder ?
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => setPendingNavigation(null)}>
+              Annuler
+            </AlertDialogCancel>
+            <Button
+              variant="outline"
+              onClick={() => {
+                handleNavigateWithoutSaving();
+                setShowNavigationWarning(false);
+              }}
+            >
+              Non, ignorer
+            </Button>
+            <AlertDialogAction
+              onClick={() => {
+                void handleSaveAndNavigate();
+                setShowNavigationWarning(false);
+              }}
+            >
+              Oui, sauvegarder
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
   );
 }
