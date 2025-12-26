@@ -84,8 +84,9 @@ async function extractFrames(
   }
 
   // Extraire toutes les frames au format JPG avec numérotation sur 6 chiffres
+  // 720p = 1280x720 (scale à 1280 pixels de large)
   await execAsync(
-    `ffmpeg -i "${videoPath}" -vf "scale=1920:-1" -q:v 2 "${outputDir}/frame_%06d.jpg"`,
+    `ffmpeg -i "${videoPath}" -vf "scale=1280:-1" -q:v 2 "${outputDir}/frame_%06d.jpg"`,
   );
 
   console.log("✅ Frames extraites avec succès !");
