@@ -29,7 +29,7 @@ export function getFrameUrl(
     fetch_format: "auto",
     secure: true,
     transformation: [
-      { width: 1920, height: 1080, crop: "limit" }, // Max dimensions
+      { width: 1280, height: 720, crop: "limit" }, // 720p for better performance
     ],
   });
 }
