@@ -259,7 +259,15 @@ export default function AnnotatePage({
             cloudinaryFolder={video.cloudinaryFolder}
             totalFrames={video.totalFrames}
             previousAnnotations={frameData.previousAnnotations}
-            currentAnnotation={frameData.annotation}
+            currentAnnotation={
+              frameData.annotation && frameData.annotation.x !== null && frameData.annotation.y !== null
+                ? {
+                    x: frameData.annotation.x,
+                    y: frameData.annotation.y,
+                    ballVisible: frameData.annotation.ballVisible,
+                  }
+                : null
+            }
             onAnnotate={handleAnnotate}
             isAnnotated={frameData.annotation !== null}
           />
