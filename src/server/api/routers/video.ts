@@ -18,7 +18,7 @@ export const videoRouter = createTRPCRouter({
    * Get single video by ID
    */
   getById: protectedProcedure
-    .input(z.object({ id: z.number() }))
+    .input(z.object({ id: z.string().uuid() }))
     .query(async ({ ctx, input }) => {
       const video = await ctx.db.query.videos.findFirst({
         where: eq(videos.id, input.id),

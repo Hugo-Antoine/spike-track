@@ -78,7 +78,7 @@ export const annotationRouter = createTRPCRouter({
    * Get next frame to annotate for a video
    */
   getNextFrame: protectedProcedure
-    .input(z.object({ videoId: z.number() }))
+    .input(z.object({ videoId: z.string().uuid() }))
     .query(async ({ ctx, input }) => {
       const userId = ctx.session.user.id;
 
@@ -206,10 +206,10 @@ export const annotationRouter = createTRPCRouter({
   saveAnnotation: protectedProcedure
     .input(
       z.object({
-        videoId: z.number(),
+        videoId: z.string().uuid(),
         frameNumber: z.number(),
-        x: z.number().optional(),
-        y: z.number().optional(),
+        x: z.number().min(0).max(1).optional(), // Coordonnées relatives 0-1
+        y: z.number().min(0).max(1).optional(), // Coordonnées relatives 0-1
         ballVisible: z.boolean(),
       })
     )
@@ -292,7 +292,7 @@ export const annotationRouter = createTRPCRouter({
    * Get stats for current video session
    */
   getStats: protectedProcedure
-    .input(z.object({ videoId: z.number() }))
+    .input(z.object({ videoId: z.string().uuid() }))
     .query(async ({ ctx, input }) => {
       const userId = ctx.session.user.id;
 
