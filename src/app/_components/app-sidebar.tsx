@@ -2,11 +2,11 @@
 
 import { useRouter, usePathname } from "next/navigation";
 import {
-  LayoutDashboard,
+  Home,
+  Shield,
   Video,
   LogOut,
   ChevronUp,
-  User2,
 } from "lucide-react";
 import {
   Sidebar,
@@ -15,15 +15,17 @@ import {
   SidebarGroup,
   SidebarGroupContent,
   SidebarGroupLabel,
+  SidebarHeader,
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
-  useSidebar,
 } from "~/components/ui/sidebar";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "~/components/ui/dropdown-menu";
 import { Avatar, AvatarFallback, AvatarImage } from "~/components/ui/avatar";
@@ -31,160 +33,187 @@ import { ThemeToggle } from "~/components/theme-toggle";
 import { authClient } from "~/server/better-auth/client";
 import { api } from "~/trpc/react";
 
-const menuItems = [
-  {
-    title: "Dashboard",
-    url: "/dashboard",
-    icon: LayoutDashboard,
-  },
-];
-
 export function AppSidebar() {
   const router = useRouter();
   const pathname = usePathname();
   const { data: session } = api.auth.getSession.useQuery();
+  const { data: progress } = api.annotation.getMyProgress.useQuery(
+    undefined,
+    {
+      enabled: session?.user.role === "ANNOTATOR" || session?.user.role === "ADMIN",
+    }
+  );
 
   const handleLogout = async () => {
     await authClient.signOut();
     router.push("/login");
   };
 
+  // Pour USER, sidebar minimale
+  if (session?.user.role === "USER") {
+    return (
+      <Sidebar>
+        <SidebarHeader className="border-b border-sidebar-border p-4">
+          <div className="flex items-center gap-2">
+            <Video className="h-6 w-6" />
+            <span className="font-semibold">Spike Track</span>
+          </div>
+        </SidebarHeader>
+        <SidebarFooter className="border-t border-sidebar-border p-4">
+          <UserMenu user={session.user} onLogout={handleLogout} />
+        </SidebarFooter>
+      </Sidebar>
+    );
+  }
+
+  // Pour ANNOTATOR et ADMIN
   return (
     <Sidebar>
-      <SidebarContent>
-        {/* App Header */}
-        <SidebarGroup>
-          <div className="flex items-center justify-between px-2">
-            <div>
-              <SidebarGroupLabel className="text-lg font-bold">
-                Spike Track
-              </SidebarGroupLabel>
-              <p className="px-2 text-xs text-muted-foreground">
-                Volleyball Annotation
-              </p>
-            </div>
-            <ThemeToggle />
+      <SidebarHeader className="border-b border-sidebar-border p-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Video className="h-6 w-6" />
+            <span className="font-semibold">Spike Track</span>
           </div>
-        </SidebarGroup>
+          <ThemeToggle />
+        </div>
+      </SidebarHeader>
 
-        {/* Navigation */}
+      <SidebarContent>
         <SidebarGroup>
           <SidebarGroupLabel>Navigation</SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
-              {menuItems.map((item) => (
-                <SidebarMenuItem key={item.title}>
+              <SidebarMenuItem>
+                <SidebarMenuButton
+                  asChild
+                  isActive={pathname === "/dashboard"}
+                  onClick={() => router.push("/dashboard")}
+                >
+                  <a>
+                    <Home className="h-4 w-4" />
+                    <span>Dashboard</span>
+                  </a>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+
+              {session?.user.role === "ADMIN" && (
+                <SidebarMenuItem>
                   <SidebarMenuButton
                     asChild
-                    isActive={pathname === item.url}
-                    onClick={() => router.push(item.url)}
+                    isActive={pathname === "/admin"}
+                    onClick={() => router.push("/admin")}
                   >
                     <a>
-                      <item.icon />
-                      <span>{item.title}</span>
+                      <Shield className="h-4 w-4" />
+                      <span>Gestion utilisateurs</span>
                     </a>
                   </SidebarMenuButton>
                 </SidebarMenuItem>
-              ))}
+              )}
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
 
-        {/* Videos Section */}
-        <SidebarGroup>
-          <SidebarGroupLabel>Videos</SidebarGroupLabel>
-          <SidebarGroupContent>
-            <VideosList />
-          </SidebarGroupContent>
-        </SidebarGroup>
+        {progress && (progress.current || progress.available.length > 0) && (
+          <SidebarGroup>
+            <SidebarGroupLabel>Vidéos</SidebarGroupLabel>
+            <SidebarGroupContent>
+              <SidebarMenu>
+                {progress.current && (
+                  <SidebarMenuItem>
+                    <SidebarMenuButton
+                      asChild
+                      isActive={pathname === `/annotate/${progress.current.videoId}`}
+                      onClick={() => router.push(`/annotate/${progress.current.videoId}`)}
+                    >
+                      <a>
+                        <Video className="h-4 w-4" />
+                        <span className="truncate">
+                          {progress.current.videoName}
+                        </span>
+                      </a>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                )}
+
+                {progress.available.slice(0, 5).map((video) => (
+                  <SidebarMenuItem key={video.id}>
+                    <SidebarMenuButton
+                      asChild
+                      isActive={pathname === `/annotate/${video.id}`}
+                      onClick={() => router.push(`/annotate/${video.id}`)}
+                    >
+                      <a>
+                        <Video className="h-4 w-4" />
+                        <span className="truncate">{video.name}</span>
+                      </a>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                ))}
+              </SidebarMenu>
+            </SidebarGroupContent>
+          </SidebarGroup>
+        )}
       </SidebarContent>
 
-      {/* Footer with User Info */}
-      <SidebarFooter>
-        <SidebarMenu>
-          <SidebarMenuItem>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <SidebarMenuButton size="lg">
-                  <Avatar className="h-8 w-8">
-                    <AvatarImage src={session?.user?.image ?? undefined} />
-                    <AvatarFallback>
-                      {session?.user?.name?.charAt(0).toUpperCase() ?? "U"}
-                    </AvatarFallback>
-                  </Avatar>
-                  <div className="flex flex-col gap-0.5 leading-none">
-                    <span className="font-semibold">{session?.user?.name || "User"}</span>
-                    <span className="text-xs text-muted-foreground">{session?.user?.email}</span>
-                  </div>
-                  <ChevronUp className="ml-auto" />
-                </SidebarMenuButton>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent
-                side="top"
-                className="w-[--radix-popper-anchor-width]"
-              >
-                <DropdownMenuItem onClick={handleLogout}>
-                  <LogOut className="mr-2 h-4 w-4" />
-                  <span>Logout</span>
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </SidebarMenuItem>
-        </SidebarMenu>
+      <SidebarFooter className="border-t border-sidebar-border p-4">
+        <UserMenu user={session?.user} onLogout={handleLogout} />
       </SidebarFooter>
     </Sidebar>
   );
 }
 
-function VideosList() {
-  const router = useRouter();
-  const pathname = usePathname();
-  const { data: progressData } = api.annotation.getMyProgress.useQuery();
+interface UserMenuProps {
+  user?: {
+    name?: string | null;
+    email?: string | null;
+    image?: string | null;
+  };
+  onLogout: () => void;
+}
 
-  if (!progressData) {
-    return (
-      <SidebarMenu>
-        <SidebarMenuItem>
-          <p className="px-2 text-xs text-muted-foreground">Loading...</p>
-        </SidebarMenuItem>
-      </SidebarMenu>
-    );
-  }
+function UserMenu({ user, onLogout }: UserMenuProps) {
+  if (!user) return null;
 
-  const allVideos = [
-    ...(progressData.current ? [progressData.current] : []),
-    ...progressData.available.map((v) => ({
-      videoId: v.id,
-      videoName: v.name,
-      percentComplete: 0,
-    })),
-  ];
+  const initials = user.name
+    ?.split(" ")
+    .map((n) => n[0])
+    .join("")
+    .toUpperCase() ?? "U";
 
   return (
     <SidebarMenu>
-      {allVideos.length === 0 ? (
-        <SidebarMenuItem>
-          <p className="px-2 text-xs text-muted-foreground">No videos</p>
-        </SidebarMenuItem>
-      ) : (
-        allVideos.map((video) => {
-          const isActive = pathname === `/annotate/${video.videoId}`;
-          return (
-            <SidebarMenuItem key={video.videoId}>
-              <SidebarMenuButton
-                asChild
-                isActive={isActive}
-                onClick={() => router.push(`/annotate/${video.videoId}`)}
-              >
-                <a>
-                  <Video className="h-4 w-4" />
-                  <span className="truncate">{video.videoName}</span>
-                </a>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-          );
-        })
-      )}
+      <SidebarMenuItem>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <SidebarMenuButton size="lg" className="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground">
+              <Avatar className="h-8 w-8">
+                <AvatarImage src={user.image ?? undefined} alt={user.name ?? undefined} />
+                <AvatarFallback>{initials}</AvatarFallback>
+              </Avatar>
+              <div className="flex flex-1 flex-col gap-0.5 overflow-hidden text-left text-sm leading-none">
+                <p className="truncate font-medium">{user.name}</p>
+                <p className="truncate text-xs text-muted-foreground">
+                  {user.email}
+                </p>
+              </div>
+              <ChevronUp className="ml-auto h-4 w-4" />
+            </SidebarMenuButton>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-56" side="top">
+            <DropdownMenuLabel>Mon compte</DropdownMenuLabel>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              className="cursor-pointer text-destructive focus:text-destructive"
+              onClick={onLogout}
+            >
+              <LogOut className="mr-2 h-4 w-4" />
+              <span>Se déconnecter</span>
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </SidebarMenuItem>
     </SidebarMenu>
   );
 }
