@@ -1,54 +1,49 @@
 "use client";
 
-import { Badge } from "~/components/ui/badge";
 import { Progress } from "~/components/ui/progress";
-import { Clock } from "lucide-react";
+import { Badge } from "~/components/ui/badge";
 
-interface Props {
+interface AnnotationStatsProps {
   currentFrame: number;
   totalFrames: number;
   annotated: number;
-  percentComplete: number;
-  sessionDuration: number; // in seconds
-}
-
-function formatDuration(seconds: number): string {
-  const hours = Math.floor(seconds / 3600);
-  const minutes = Math.floor((seconds % 3600) / 60);
-  const secs = seconds % 60;
-
-  if (hours > 0) {
-    return `${hours}h ${minutes}m`;
-  } else if (minutes > 0) {
-    return `${minutes}m ${secs}s`;
-  } else {
-    return `${secs}s`;
-  }
+  isAnnotated: boolean;
+  isCompleted: boolean;
 }
 
 export function AnnotationStats({
   currentFrame,
   totalFrames,
   annotated,
-  percentComplete,
-  sessionDuration,
-}: Props) {
+  isAnnotated,
+  isCompleted,
+}: AnnotationStatsProps) {
+  const percentComplete = (annotated / totalFrames) * 100;
+
   return (
-    <div className="border-b p-6">
-      <div className="mx-auto max-w-4xl">
-        <div className="mb-4 flex items-center justify-between">
-          <div className="flex gap-3">
-            <Badge variant="outline">
-              Frame: {currentFrame} / {totalFrames}
+    <div className="space-y-3 border-b border-border bg-background p-4">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <h2 className="text-lg font-semibold">
+            Frame {currentFrame}
+          </h2>
+          {isAnnotated && (
+            <Badge variant="secondary">Annoté</Badge>
+          )}
+          {isCompleted && (
+            <Badge variant="default" className="bg-green-600">
+              Complété
             </Badge>
-            <Badge variant="outline">Annotated: {annotated}</Badge>
-            <Badge variant="outline" className="flex items-center gap-1">
-              <Clock className="h-3 w-3" />
-              {formatDuration(sessionDuration)}
-            </Badge>
-          </div>
-          <Badge>{percentComplete.toFixed(1)}%</Badge>
+          )}
         </div>
+        <p className="text-sm text-muted-foreground">
+          {annotated} / {totalFrames}
+        </p>
+      </div>
+
+      {/* Progress bar */}
+      <div className="space-y-1">
         <Progress value={percentComplete} className="h-2" />
       </div>
     </div>
