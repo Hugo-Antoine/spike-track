@@ -21,3 +21,10 @@ export const auth = betterAuth({
 });
 
 export type Session = typeof auth.$Infer.Session;
+
+// Extend Better Auth types to include role field
+declare module "better-auth/types" {
+  interface User {
+    role: "USER" | "ANNOTATOR" | "ADMIN";
+  }
+}
