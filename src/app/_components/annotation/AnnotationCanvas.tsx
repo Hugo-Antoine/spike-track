@@ -1,24 +1,21 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import { Skeleton } from "~/components/ui/skeleton";
 import { Alert, AlertDescription } from "~/components/ui/alert";
 import { AlertCircle } from "lucide-react";
+import { MagnifyingGlass } from "./MagnifyingGlass";
 import { getFrameUrlClient } from "~/lib/cloudinary";
 
-interface Point {
-  x: number;
-  y: number;
-}
-
-interface Props {
+interface AnnotationCanvasProps {
   imageUrl: string;
   frameNumber: number;
   cloudinaryFolder: string;
   totalFrames: number;
   previousAnnotations: Array<{ frameNumber: number; x: number; y: number }>;
-  currentPoint: Point | null;
-  onPointChange: (point: Point | null) => void;
+  currentAnnotation: { x: number; y: number; ballVisible: boolean } | null;
+  onAnnotate: (x: number, y: number) => void;
+  isAnnotated: boolean;
 }
 
 export function AnnotationCanvas({
@@ -27,47 +24,35 @@ export function AnnotationCanvas({
   cloudinaryFolder,
   totalFrames,
   previousAnnotations,
-  currentPoint,
-  onPointChange,
-}: Props) {
-  const canvasRef = useRef<HTMLDivElement>(null);
-  const imageRef = useRef<HTMLImageElement>(null);
+  currentAnnotation,
+  onAnnotate,
+  isAnnotated,
+}: AnnotationCanvasProps) {
   const [isLoading, setIsLoading] = useState(true);
-  const [imageError, setImageError] = useState(false);
-  const [cursorPosition, setCursorPosition] = useState<Point | null>(null);
+  const [hasError, setHasError] = useState(false);
+  const [mousePos, setMousePos] = useState<{ x: number; y: number } | null>(null);
+  const imageRef = useRef<HTMLImageElement | null>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
 
-  // Preload next 10 frames for smooth navigation
+  // Preload next 30 frames
   useEffect(() => {
-    const preloadCount = 10;
-    const preloadFrames = Array.from(
-      { length: preloadCount },
-      (_, i) => frameNumber + i + 1
-    );
-
-    preloadFrames.forEach((frame) => {
-      if (frame < totalFrames) {
+    const preloadFrames = [];
+    for (let i = 1; i <= 30; i++) {
+      const nextFrame = frameNumber + i;
+      if (nextFrame < totalFrames) {
         const img = new Image();
-        img.src = getFrameUrlClient(cloudinaryFolder, frame);
+        img.src = getFrameUrlClient(cloudinaryFolder, nextFrame);
+        preloadFrames.push(img);
       }
-    });
+    }
+    // Keep references to prevent GC
+    return () => {
+      preloadFrames.forEach((img) => {
+        img.src = "";
+      });
+    };
   }, [frameNumber, cloudinaryFolder, totalFrames]);
 
-  // Handle image load
-  useEffect(() => {
-    setIsLoading(true);
-    setImageError(false);
-  }, [imageUrl]);
-
-  const handleImageLoad = () => {
-    setIsLoading(false);
-  };
-
-  const handleImageError = () => {
-    setIsLoading(false);
-    setImageError(true);
-  };
-
-  // Handle click to set annotation point
   const handleClick = (e: React.MouseEvent<HTMLDivElement>) => {
     if (!imageRef.current) return;
 
@@ -75,13 +60,18 @@ export function AnnotationCanvas({
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
 
-    // Ensure coordinates are within image bounds
-    if (x >= 0 && x <= rect.width && y >= 0 && y <= rect.height) {
-      onPointChange({ x, y });
+    // Convert to relative coordinates (0-1)
+    const relativeX = x / rect.width;
+    const relativeY = y / rect.height;
+
+    // Validate coordinates are within bounds
+    if (relativeX < 0 || relativeX > 1 || relativeY < 0 || relativeY > 1) {
+      return; // Ignore clicks outside image
     }
+
+    onAnnotate(relativeX, relativeY);
   };
 
-  // Track mouse position for custom cursor
   const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
     if (!imageRef.current) return;
 
@@ -89,110 +79,102 @@ export function AnnotationCanvas({
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
 
-    setCursorPosition({ x, y });
+    setMousePos({ x, y });
   };
 
   const handleMouseLeave = () => {
-    setCursorPosition(null);
+    setMousePos(null);
   };
 
+  if (isLoading) {
+    return (
+      <div className="flex h-full items-center justify-center p-4">
+        <Skeleton className="h-full w-full max-w-6xl" />
+      </div>
+    );
+  }
+
+  if (hasError) {
+    return (
+      <div className="flex h-full items-center justify-center p-4">
+        <Alert variant="destructive" className="max-w-md">
+          <AlertCircle className="h-4 w-4" />
+          <AlertDescription>
+            Erreur lors du chargement de l'image. Veuillez réessayer.
+          </AlertDescription>
+        </Alert>
+      </div>
+    );
+  }
+
   return (
-    <div className="relative flex h-full w-full flex-col items-center justify-center bg-background">
-      {isLoading && (
-        <div className="absolute inset-0 flex items-center justify-center">
-          <Skeleton className="h-full w-full" />
-        </div>
-      )}
-
-      {imageError && (
-        <div className="absolute inset-0 flex items-center justify-center p-4">
-          <Alert variant="destructive" className="max-w-md">
-            <AlertCircle className="h-4 w-4" />
-            <AlertDescription>
-              Échec du chargement de l'image
-            </AlertDescription>
-          </Alert>
-        </div>
-      )}
-
-      <div
-        ref={canvasRef}
-        className="relative cursor-none"
-        onClick={handleClick}
-        onMouseMove={handleMouseMove}
-        onMouseLeave={handleMouseLeave}
-      >
+    <div
+      ref={containerRef}
+      className="relative flex h-full items-center justify-center overflow-hidden bg-muted/30 p-4"
+      onClick={handleClick}
+      onMouseMove={handleMouseMove}
+      onMouseLeave={handleMouseLeave}
+    >
+      <div className="relative">
         <img
           ref={imageRef}
           src={imageUrl}
           alt={`Frame ${frameNumber}`}
-          className="max-h-[calc(100vh-350px)] w-auto object-contain"
-          onLoad={handleImageLoad}
-          onError={handleImageError}
+          className="max-h-full max-w-full select-none"
+          draggable={false}
+          onLoad={() => setIsLoading(false)}
+          onError={() => {
+            setIsLoading(false);
+            setHasError(true);
+          }}
         />
 
-        {/* SVG Overlay for annotations and cursor */}
+        {/* SVG Overlay for annotations */}
         <svg
           className="pointer-events-none absolute left-0 top-0 h-full w-full"
-          style={{ width: "100%", height: "100%" }}
+          style={{ zIndex: 10 }}
         >
-          {/* Previous annotations (green dots) */}
-          {previousAnnotations.map((ann, idx) => (
-            <circle
-              key={`prev-${ann.frameNumber}-${idx}`}
-              cx={ann.x}
-              cy={ann.y}
-              r={6}
-              fill="rgb(34, 197, 94)"
-              fillOpacity={0.5}
-            />
-          ))}
+          {/* Previous annotations (green dots with fade) */}
+          {previousAnnotations.map((ann, idx) => {
+            const opacity = 1 - idx * 0.15; // Fade: 1, 0.85, 0.70, 0.55, 0.40
+            if (!imageRef.current) return null;
+            const rect = imageRef.current.getBoundingClientRect();
+            const pixelX = ann.x * rect.width;
+            const pixelY = ann.y * rect.height;
+
+            return (
+              <circle
+                key={ann.frameNumber}
+                cx={pixelX}
+                cy={pixelY}
+                r={6}
+                fill="green"
+                opacity={opacity}
+              />
+            );
+          })}
 
           {/* Current annotation (red dot) */}
-          {currentPoint && (
+          {currentAnnotation && currentAnnotation.ballVisible && imageRef.current && (
             <circle
-              cx={currentPoint.x}
-              cy={currentPoint.y}
+              cx={currentAnnotation.x * imageRef.current.getBoundingClientRect().width}
+              cy={currentAnnotation.y * imageRef.current.getBoundingClientRect().height}
               r={8}
-              fill="rgb(239, 68, 68)"
-              fillOpacity={0.9}
+              fill="red"
+              opacity={0.9}
             />
           )}
-
-          {/* Custom crosshair cursor */}
-          {cursorPosition && (
-            <g>
-              <line
-                x1={cursorPosition.x - 15}
-                y1={cursorPosition.y}
-                x2={cursorPosition.x + 15}
-                y2={cursorPosition.y}
-                stroke="white"
-                strokeWidth={2}
-                opacity={0.7}
-              />
-              <line
-                x1={cursorPosition.x}
-                y1={cursorPosition.y - 15}
-                x2={cursorPosition.x}
-                y2={cursorPosition.y + 15}
-                stroke="white"
-                strokeWidth={2}
-                opacity={0.7}
-              />
-            </g>
-          )}
         </svg>
-      </div>
 
-      {/* Debug info - Image URL */}
-      <div className="mt-2 max-w-full overflow-hidden text-center">
-        <p className="text-xs text-muted-foreground">
-          <span className="font-semibold">Frame:</span> {frameNumber}
-        </p>
-        <p className="truncate text-xs text-muted-foreground" title={imageUrl}>
-          {imageUrl}
-        </p>
+        {/* Magnifying glass */}
+        {mousePos && imageRef.current && (
+          <MagnifyingGlass
+            imageUrl={imageUrl}
+            mouseX={mousePos.x}
+            mouseY={mousePos.y}
+            imageElement={imageRef.current}
+          />
+        )}
       </div>
     </div>
   );
