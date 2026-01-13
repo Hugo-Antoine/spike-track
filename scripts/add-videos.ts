@@ -23,12 +23,12 @@ const db = drizzle(sql, { schema });
 // 📹 Définissez vos vidéos ici
 const videosToAdd = [
   {
-    name: "Match Reims vs Amiens - Extrait Test (5:27-6:08)",
-    cloudinaryFolder: "volleyball/reims_amiens_test",
-    totalFrames: 1223,
+    name: "Match Reims vs Amiens - Extrait 10s",
+    cloudinaryFolder: "reims-amiens-10s",
+    totalFrames: 300,
     fps: 30,
-    width: 1920,
-    height: 1080,
+    width: 1280,
+    height: 720,
   },
 ];
 

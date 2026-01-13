@@ -19,7 +19,9 @@ export function getFrameUrl(
   cloudinaryFolder: string,
   frameNumber: number
 ): string {
-  const paddedFrameNumber = frameNumber.toString().padStart(6, "0");
+  // FFmpeg starts frame numbering at 1, but application uses 0-indexed frames
+  const actualFrameNumber = frameNumber + 1;
+  const paddedFrameNumber = actualFrameNumber.toString().padStart(6, "0");
   // Note: Due to upload script using both public_id AND folder params,
   // the path is duplicated in Cloudinary
   const publicId = `${cloudinaryFolder}/${cloudinaryFolder}/frame_${paddedFrameNumber}`;

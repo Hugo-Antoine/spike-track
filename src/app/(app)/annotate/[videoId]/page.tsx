@@ -146,9 +146,9 @@ export default function AnnotatePage({
       ballVisible: true,
     });
 
-    // Navigate to next unannotated frame
-    if (nextUnannotated && !nextUnannotated.completed) {
-      setCurrentFrame(nextUnannotated.frameNumber!);
+    // Navigate to next frame
+    if (video && currentFrame < video.totalFrames - 1) {
+      setCurrentFrame(currentFrame + 1);
     }
   };
 
@@ -158,9 +158,9 @@ export default function AnnotatePage({
       ballVisible: false,
     });
 
-    // Navigate to next unannotated frame
-    if (nextUnannotated && !nextUnannotated.completed) {
-      setCurrentFrame(nextUnannotated.frameNumber!);
+    // Navigate to next frame
+    if (video && currentFrame < video.totalFrames - 1) {
+      setCurrentFrame(currentFrame + 1);
     }
   };
 
@@ -253,7 +253,6 @@ export default function AnnotatePage({
         {/* Canvas */}
         <div className="flex-1 overflow-hidden">
           <AnnotationCanvas
-            key={currentFrame}
             imageUrl={frameData.imageUrl}
             frameNumber={currentFrame}
             cloudinaryFolder={video.cloudinaryFolder}

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useMemo } from "react";
 import { Skeleton } from "~/components/ui/skeleton";
 import { Alert, AlertDescription } from "~/components/ui/alert";
 import { AlertCircle } from "lucide-react";
@@ -18,6 +18,10 @@ interface AnnotationCanvasProps {
   isAnnotated: boolean;
 }
 
+// Nombre d'images à garder en cache dans le DOM
+const CACHE_SIZE = 40;
+const PRELOAD_AHEAD = 30;
+
 export function AnnotationCanvas({
   imageUrl,
   frameNumber,
@@ -28,35 +32,37 @@ export function AnnotationCanvas({
   onAnnotate,
   isAnnotated,
 }: AnnotationCanvasProps) {
-  const [isLoading, setIsLoading] = useState(true);
+  const [loadedFrames, setLoadedFrames] = useState<Set<number>>(new Set());
   const [hasError, setHasError] = useState(false);
   const [mousePos, setMousePos] = useState<{ x: number; y: number } | null>(null);
-  const imageRef = useRef<HTMLImageElement | null>(null);
+  const activeImageRef = useRef<HTMLImageElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const imageRefsMap = useRef<Map<number, HTMLImageElement>>(new Map());
 
-  // Preload next 30 frames
-  useEffect(() => {
-    const preloadFrames = [];
-    for (let i = 1; i <= 30; i++) {
-      const nextFrame = frameNumber + i;
-      if (nextFrame < totalFrames) {
-        const img = new Image();
-        img.src = getFrameUrlClient(cloudinaryFolder, nextFrame);
-        preloadFrames.push(img);
-      }
+  // Calculer quelles frames doivent être dans le DOM
+  const framesToRender = useMemo(() => {
+    const frames: number[] = [];
+    const start = Math.max(0, frameNumber - 5); // 5 frames avant
+    const end = Math.min(totalFrames - 1, frameNumber + CACHE_SIZE); // CACHE_SIZE frames après
+
+    for (let i = start; i <= end; i++) {
+      frames.push(i);
     }
-    // Keep references to prevent GC
-    return () => {
-      preloadFrames.forEach((img) => {
-        img.src = "";
-      });
-    };
-  }, [frameNumber, cloudinaryFolder, totalFrames]);
+    return frames;
+  }, [frameNumber, totalFrames]);
+
+  // Mettre à jour la ref de l'image active
+  useEffect(() => {
+    const activeImg = imageRefsMap.current.get(frameNumber);
+    if (activeImg) {
+      activeImageRef.current = activeImg;
+    }
+  }, [frameNumber]);
 
   const handleClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (!imageRef.current) return;
+    if (!activeImageRef.current) return;
 
-    const rect = imageRef.current.getBoundingClientRect();
+    const rect = activeImageRef.current.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
 
@@ -73,9 +79,9 @@ export function AnnotationCanvas({
   };
 
   const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (!imageRef.current) return;
+    if (!activeImageRef.current) return;
 
-    const rect = imageRef.current.getBoundingClientRect();
+    const rect = activeImageRef.current.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
 
@@ -86,13 +92,7 @@ export function AnnotationCanvas({
     setMousePos(null);
   };
 
-  if (isLoading) {
-    return (
-      <div className="flex h-full items-center justify-center p-4">
-        <Skeleton className="h-full w-full max-w-6xl" />
-      </div>
-    );
-  }
+  const isCurrentFrameLoaded = loadedFrames.has(frameNumber);
 
   if (hasError) {
     return (
@@ -115,64 +115,97 @@ export function AnnotationCanvas({
       onMouseMove={handleMouseMove}
       onMouseLeave={handleMouseLeave}
     >
+      {/* Skeleton si la frame courante n'est pas encore chargée */}
+      {!isCurrentFrameLoaded && (
+        <div className="absolute inset-0 flex items-center justify-center p-4 z-50">
+          <Skeleton className="h-full w-full max-w-6xl" />
+        </div>
+      )}
+
+      {/* Container pour toutes les images */}
       <div className="relative">
-        <img
-          ref={imageRef}
-          src={imageUrl}
-          alt={`Frame ${frameNumber}`}
-          className="max-h-full max-w-full select-none"
-          draggable={false}
-          onLoad={() => setIsLoading(false)}
-          onError={() => {
-            setIsLoading(false);
-            setHasError(true);
-          }}
-        />
+        {framesToRender.map((frame) => {
+          const url = getFrameUrlClient(cloudinaryFolder, frame);
+          const isActive = frame === frameNumber;
+
+          return (
+            <img
+              key={frame}
+              ref={(el) => {
+                if (el) {
+                  imageRefsMap.current.set(frame, el);
+                } else {
+                  imageRefsMap.current.delete(frame);
+                }
+              }}
+              src={url}
+              alt={`Frame ${frame}`}
+              className="max-h-full max-w-full select-none"
+              draggable={false}
+              style={{
+                position: isActive ? 'relative' : 'absolute',
+                top: 0,
+                left: 0,
+                visibility: isActive ? 'visible' : 'hidden',
+                zIndex: isActive ? 1 : 0,
+              }}
+              onLoad={() => {
+                setLoadedFrames((prev) => new Set(prev).add(frame));
+              }}
+              onError={() => {
+                if (isActive) {
+                  setHasError(true);
+                }
+              }}
+            />
+          );
+        })}
 
         {/* SVG Overlay for annotations */}
-        <svg
-          className="pointer-events-none absolute left-0 top-0 h-full w-full"
-          style={{ zIndex: 10 }}
-        >
-          {/* Previous annotations (green dots with fade) */}
-          {previousAnnotations.map((ann, idx) => {
-            const opacity = 1 - idx * 0.15; // Fade: 1, 0.85, 0.70, 0.55, 0.40
-            if (!imageRef.current) return null;
-            const rect = imageRef.current.getBoundingClientRect();
-            const pixelX = ann.x * rect.width;
-            const pixelY = ann.y * rect.height;
+        {activeImageRef.current && (
+          <svg
+            className="pointer-events-none absolute left-0 top-0 h-full w-full"
+            style={{ zIndex: 10 }}
+          >
+            {/* Previous annotations (green dots with fade) */}
+            {previousAnnotations.map((ann, idx) => {
+              const opacity = 1 - idx * 0.15;
+              const rect = activeImageRef.current!.getBoundingClientRect();
+              const pixelX = ann.x * rect.width;
+              const pixelY = ann.y * rect.height;
 
-            return (
+              return (
+                <circle
+                  key={ann.frameNumber}
+                  cx={pixelX}
+                  cy={pixelY}
+                  r={6}
+                  fill="green"
+                  opacity={opacity}
+                />
+              );
+            })}
+
+            {/* Current annotation (red dot) */}
+            {currentAnnotation && currentAnnotation.ballVisible && (
               <circle
-                key={ann.frameNumber}
-                cx={pixelX}
-                cy={pixelY}
-                r={6}
-                fill="green"
-                opacity={opacity}
+                cx={currentAnnotation.x * activeImageRef.current.getBoundingClientRect().width}
+                cy={currentAnnotation.y * activeImageRef.current.getBoundingClientRect().height}
+                r={8}
+                fill="red"
+                opacity={0.9}
               />
-            );
-          })}
-
-          {/* Current annotation (red dot) */}
-          {currentAnnotation && currentAnnotation.ballVisible && imageRef.current && (
-            <circle
-              cx={currentAnnotation.x * imageRef.current.getBoundingClientRect().width}
-              cy={currentAnnotation.y * imageRef.current.getBoundingClientRect().height}
-              r={8}
-              fill="red"
-              opacity={0.9}
-            />
-          )}
-        </svg>
+            )}
+          </svg>
+        )}
 
         {/* Magnifying glass */}
-        {mousePos && imageRef.current && (
+        {mousePos && activeImageRef.current && (
           <MagnifyingGlass
-            imageUrl={imageUrl}
+            imageUrl={getFrameUrlClient(cloudinaryFolder, frameNumber)}
             mouseX={mousePos.x}
             mouseY={mousePos.y}
-            imageElement={imageRef.current}
+            imageElement={activeImageRef.current}
           />
         )}
       </div>
