@@ -1,6 +1,7 @@
 "use client";
 
 import { use, useEffect, useState } from "react";
+import { keepPreviousData } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 import { api } from "~/trpc/react";
 import { AnnotationCanvas } from "~/app/_components/annotation/AnnotationCanvas";
@@ -47,7 +48,7 @@ export default function AnnotatePage({
 
   const { data: frameData, refetch: refetchFrame } = api.annotation.getFrame.useQuery(
     { videoId, frameNumber: currentFrame },
-    { enabled: !!video }
+    { enabled: !!video, placeholderData: keepPreviousData }
   );
 
   const { data: stats, refetch: refetchStats } = api.annotation.getStats.useQuery(
