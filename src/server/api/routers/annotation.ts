@@ -471,7 +471,17 @@ export const annotationRouter = createTRPCRouter({
       });
 
       if (!progress) {
-        throw new Error("Progress record not found");
+        // No progress yet (first visit) — return defaults
+        const video = await ctx.db.query.videos.findFirst({
+          where: eq(videos.id, input.videoId),
+        });
+        return {
+          currentFrame: -1,
+          totalFrames: video?.totalFrames ?? 0,
+          annotated: 0,
+          percentComplete: 0,
+          sessionDuration: 0,
+        };
       }
 
       const sessionDuration = Math.floor(
@@ -486,5 +496,42 @@ export const annotationRouter = createTRPCRouter({
           (progress.totalAnnotated / progress.video.totalFrames) * 100,
         sessionDuration,
       };
+    }),
+
+  /**
+   * Get all annotations for a video (bulk load for client-side cache)
+   */
+  getAllAnnotations: protectedProcedure
+    .input(z.object({ videoId: z.string().uuid() }))
+    .query(async ({ ctx, input }) => {
+      const userId = ctx.session.user.id;
+
+      const allAnnotations = await ctx.db.query.annotations.findMany({
+        where: and(
+          eq(annotations.videoId, input.videoId),
+          eq(annotations.userId, userId)
+        ),
+        columns: {
+          frameNumber: true,
+          x: true,
+          y: true,
+          ballVisible: true,
+        },
+      });
+
+      // Return as Record<frameNumber, annotation> for O(1) lookup
+      const annotationMap: Record<
+        number,
+        { x: number | null; y: number | null; ballVisible: boolean }
+      > = {};
+      for (const a of allAnnotations) {
+        annotationMap[a.frameNumber] = {
+          x: a.x,
+          y: a.y,
+          ballVisible: a.ballVisible,
+        };
+      }
+
+      return annotationMap;
     }),
 });

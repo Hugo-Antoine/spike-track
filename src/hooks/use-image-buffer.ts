@@ -36,6 +36,14 @@ export function useImageBuffer({
   const [images, setImages] = useState<Map<number, BufferedImage>>(new Map());
   const loadingRef = useRef<Set<number>>(new Set());
 
+  // Use refs for callbacks to avoid recreating preloadImage on every render
+  const onFrameReadyRef = useRef(onFrameReady);
+  const onFrameErrorRef = useRef(onFrameError);
+  useEffect(() => {
+    onFrameReadyRef.current = onFrameReady;
+    onFrameErrorRef.current = onFrameError;
+  }, [onFrameReady, onFrameError]);
+
   // Calculate window boundaries
   const windowStart = Math.max(0, currentFrame - bufferBefore);
   const windowEnd = Math.min(totalFrames - 1, currentFrame + bufferAfter);
@@ -69,7 +77,7 @@ export function useImageBuffer({
             newMap.set(frameNumber, { frameNumber, url, status: "ready" });
             return newMap;
           });
-          onFrameReady?.(frameNumber);
+          onFrameReadyRef.current?.(frameNumber);
         })
         .catch(() => {
           loadingRef.current.delete(frameNumber);
@@ -78,10 +86,10 @@ export function useImageBuffer({
             newMap.set(frameNumber, { frameNumber, url, status: "error" });
             return newMap;
           });
-          onFrameError?.(frameNumber);
+          onFrameErrorRef.current?.(frameNumber);
         });
     },
-    [cloudinaryFolder, onFrameReady, onFrameError]
+    [cloudinaryFolder]
   );
 
   // Effect to manage buffer when currentFrame changes
@@ -109,6 +117,20 @@ export function useImageBuffer({
 
     // Clean up images outside the window (but never remove current frame)
     setImages((prev) => {
+      // First check if there's anything to clean up
+      let hasFramesToRemove = false;
+      for (const [frame] of prev) {
+        if (frame !== currentFrame && (frame < windowStart || frame > windowEnd)) {
+          hasFramesToRemove = true;
+          break;
+        }
+      }
+
+      // Only create a new Map if we actually need to remove something
+      if (!hasFramesToRemove) {
+        return prev;
+      }
+
       const newMap = new Map(prev);
       for (const [frame] of prev) {
         if (frame !== currentFrame && (frame < windowStart || frame > windowEnd)) {

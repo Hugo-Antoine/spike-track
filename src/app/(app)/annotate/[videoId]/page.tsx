@@ -1,7 +1,6 @@
 "use client";
 
 import { use, useEffect, useState } from "react";
-import { keepPreviousData } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 import { api } from "~/trpc/react";
 import { AnnotationCanvas } from "~/app/_components/annotation/AnnotationCanvas";
@@ -22,6 +21,8 @@ import {
 import { PartyPopper } from "lucide-react";
 import { useToast } from "~/hooks/use-toast";
 import { useAnnotationBuffer } from "~/hooks/use-annotation-buffer";
+import { useAnnotationData } from "~/hooks/use-annotation-data";
+import { getFrameUrlClient } from "~/lib/cloudinary";
 
 export default function AnnotatePage({
   params,
@@ -32,7 +33,6 @@ export default function AnnotatePage({
   const videoId = resolvedParams.videoId;
   const router = useRouter();
   const { toast } = useToast();
-  const utils = api.useUtils();
 
   const [currentFrame, setCurrentFrame] = useState(0);
   const [isCompleted, setIsCompleted] = useState(false);
@@ -40,26 +40,33 @@ export default function AnnotatePage({
   const [pendingNavigation, setPendingNavigation] = useState<string | null>(null);
 
   // Annotation buffer
-  const { buffer, addToBuffer, manualSave, pendingCount, isSaving } =
+  const { addToBuffer, manualSave, pendingCount, isSaving, countdown } =
     useAnnotationBuffer({ videoId });
 
-  // Queries
-  const { data: video } = api.video.getById.useQuery({ id: videoId });
+  // Annotation data (bulk cache)
+  const {
+    getFrameAnnotation,
+    getPreviousVisible,
+    setLocalAnnotation,
+    isLoading: isAnnotationsLoading,
+  } = useAnnotationData(videoId);
 
-  const { data: frameData, refetch: refetchFrame } = api.annotation.getFrame.useQuery(
-    { videoId, frameNumber: currentFrame },
-    { enabled: !!video, placeholderData: keepPreviousData }
+  // Queries — all fire in parallel (no `enabled` gating)
+  const { data: video } = api.video.getById.useQuery(
+    { id: videoId },
+    { staleTime: Infinity }
   );
 
-  const { data: stats, refetch: refetchStats } = api.annotation.getStats.useQuery(
-    { videoId },
-    { refetchInterval: 5000, enabled: !!video }
-  );
+  const { data: stats } = api.annotation.getStats.useQuery({ videoId });
 
-  const { data: nextUnannotated } = api.annotation.getNextFrame.useQuery(
-    { videoId },
-    { enabled: !!video }
-  );
+  const { data: nextUnannotated } = api.annotation.getNextFrame.useQuery({
+    videoId,
+  });
+
+  // Derived annotation data (instant, from local cache)
+  const currentAnnotation = getFrameAnnotation(currentFrame);
+  const previousAnnotations = getPreviousVisible(currentFrame);
+  const isAnnotated = currentAnnotation !== null;
 
   // Check if all frames are annotated
   useEffect(() => {
@@ -109,11 +116,11 @@ export default function AnnotatePage({
         switch (e.key.toLowerCase()) {
           case "a":
             e.preventDefault();
-            handlePrevUnannotated();
+            handleGoToFirst();
             break;
           case "e":
             e.preventDefault();
-            handleNextUnannotated();
+            handleGoToNextUnannotated();
             break;
         }
       } else {
@@ -147,6 +154,9 @@ export default function AnnotatePage({
       ballVisible: true,
     });
 
+    // Optimistic update in local cache
+    setLocalAnnotation(currentFrame, { x, y, ballVisible: true });
+
     // Navigate to next frame
     if (video && currentFrame < video.totalFrames - 1) {
       setCurrentFrame(currentFrame + 1);
@@ -158,6 +168,9 @@ export default function AnnotatePage({
       frameNumber: currentFrame,
       ballVisible: false,
     });
+
+    // Optimistic update in local cache
+    setLocalAnnotation(currentFrame, { x: null, y: null, ballVisible: false });
 
     // Navigate to next frame
     if (video && currentFrame < video.totalFrames - 1) {
@@ -177,16 +190,11 @@ export default function AnnotatePage({
     }
   };
 
-  const handlePrevUnannotated = () => {
-    // Find previous unannotated frame
-    // TODO: Implement with new API query
-    toast({
-      title: "Fonction en développement",
-      description: "Navigation vers frame non annotée précédente",
-    });
+  const handleGoToFirst = () => {
+    setCurrentFrame(0);
   };
 
-  const handleNextUnannotated = () => {
+  const handleGoToNextUnannotated = () => {
     if (nextUnannotated && !nextUnannotated.completed) {
       setCurrentFrame(nextUnannotated.frameNumber!);
     }
@@ -202,7 +210,7 @@ export default function AnnotatePage({
   };
 
   // Loading
-  if (!video || !frameData || !stats) {
+  if (!video || isAnnotationsLoading || !stats) {
     return (
       <div className="flex min-h-screen items-center justify-center">
         <p>Loading...</p>
@@ -239,37 +247,44 @@ export default function AnnotatePage({
     );
   }
 
+  // Image URL generated client-side (no server needed)
+  const imageUrl = getFrameUrlClient(video.cloudinaryFolder, currentFrame);
+
   return (
     <>
-      <main className="flex h-screen flex-col bg-background">
+      <div className="flex h-[calc(100dvh-2.5rem)] flex-col bg-background">
         {/* Stats Header */}
         <AnnotationStats
+          videoName={video.name}
           currentFrame={currentFrame}
           totalFrames={video.totalFrames}
           annotated={stats.annotated}
-          isAnnotated={frameData.annotation !== null}
-          isCompleted={isCompleted}
+          isAnnotated={isAnnotated}
+          pendingCount={pendingCount}
+          isSaving={isSaving}
+          countdown={countdown}
+          onManualSave={manualSave}
         />
 
         {/* Canvas */}
-        <div className="flex-1 overflow-hidden">
+        <div className="min-h-0 flex-1">
           <AnnotationCanvas
-            imageUrl={frameData.imageUrl}
+            imageUrl={imageUrl}
             frameNumber={currentFrame}
             cloudinaryFolder={video.cloudinaryFolder}
             totalFrames={video.totalFrames}
-            previousAnnotations={frameData.previousAnnotations}
+            previousAnnotations={previousAnnotations}
             currentAnnotation={
-              frameData.annotation && frameData.annotation.x !== null && frameData.annotation.y !== null
+              currentAnnotation && currentAnnotation.x !== null && currentAnnotation.y !== null
                 ? {
-                    x: frameData.annotation.x,
-                    y: frameData.annotation.y,
-                    ballVisible: frameData.annotation.ballVisible,
+                    x: currentAnnotation.x,
+                    y: currentAnnotation.y,
+                    ballVisible: currentAnnotation.ballVisible,
                   }
                 : null
             }
             onAnnotate={handleAnnotate}
-            isAnnotated={frameData.annotation !== null}
+            isAnnotated={isAnnotated}
           />
         </div>
 
@@ -277,15 +292,12 @@ export default function AnnotatePage({
         <AnnotationControls
           onPrevFrame={handlePrevFrame}
           onNextFrame={handleNextFrame}
-          onPrevUnannotated={handlePrevUnannotated}
-          onNextUnannotated={handleNextUnannotated}
+          onGoToFirst={handleGoToFirst}
+          onGoToNextUnannotated={handleGoToNextUnannotated}
           onNoBall={handleNoBall}
-          onManualSave={manualSave}
-          pendingCount={pendingCount}
-          isSaving={isSaving}
           disabled={false}
         />
-      </main>
+      </div>
 
       {/* Navigation Warning Dialog */}
       <AlertDialog open={showNavigationWarning} onOpenChange={setShowNavigationWarning}>

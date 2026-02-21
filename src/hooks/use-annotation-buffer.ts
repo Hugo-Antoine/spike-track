@@ -11,93 +11,132 @@ interface Annotation {
 
 interface UseAnnotationBufferOptions {
   videoId: string;
-  autoSaveInterval?: number; // ms, default 30000 (30s)
+  autoSaveDelay?: number; // ms, default 15000 (15s)
 }
 
 export function useAnnotationBuffer({
   videoId,
-  autoSaveInterval = 30000,
+  autoSaveDelay = 15000,
 }: UseAnnotationBufferOptions) {
   const { toast } = useToast();
   const [buffer, setBuffer] = useState<Annotation[]>([]);
   const [isSaving, setIsSaving] = useState(false);
-  const intervalRef = useRef<NodeJS.Timeout | null>(null);
+  const [countdown, setCountdown] = useState<number | null>(null);
+  const bufferRef = useRef<Annotation[]>([]);
+  const isSavingRef = useRef(false);
+  const bufferStartTimeRef = useRef<number | null>(null);
+  const autoSaveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const utils = api.useUtils();
 
-  const saveBatch = api.annotation.saveBatch.useMutation({
-    onSuccess: async (data) => {
-      toast({
-        title: "Sauvegarde automatique effectuée",
-        description: `${data.count} annotation(s) sauvegardée(s)`,
-      });
-      await utils.annotation.getStats.invalidate({ videoId });
-      await utils.annotation.getMyProgress.invalidate();
-      setIsSaving(false);
-    },
-    onError: (error) => {
-      toast({
-        title: "Erreur de sauvegarde",
-        description: error.message,
-        variant: "destructive",
-      });
-      setIsSaving(false);
-    },
-  });
+  // Keep refs in sync
+  bufferRef.current = buffer;
+  isSavingRef.current = isSaving;
 
-  // Fonction de sauvegarde
-  const saveBufferToServer = useCallback(
+  const saveBatch = api.annotation.saveBatch.useMutation();
+  const saveBatchRef = useRef(saveBatch);
+  saveBatchRef.current = saveBatch;
+
+  const doSave = useCallback(
     async (annotationsToSave: Annotation[]) => {
-      if (annotationsToSave.length === 0 || isSaving) return;
+      if (annotationsToSave.length === 0 || isSavingRef.current) return;
 
       setIsSaving(true);
 
-      // Retry logic: 3 attempts with increasing delay
       let attempts = 0;
       const maxAttempts = 3;
 
       while (attempts < maxAttempts) {
         try {
-          await saveBatch.mutateAsync({
+          const data = await saveBatchRef.current.mutateAsync({
             videoId,
             annotations: annotationsToSave,
           });
-          return; // Success, exit
+          toast({
+            title: "Sauvegarde effectuée",
+            description: `${data.count} annotation(s) sauvegardée(s)`,
+          });
+          await Promise.all([
+            utils.annotation.getStats.invalidate({ videoId }),
+            utils.annotation.getMyProgress.invalidate(),
+            utils.annotation.getNextFrame.invalidate({ videoId }),
+            utils.annotation.getAllAnnotations.invalidate({ videoId }),
+          ]);
+          setIsSaving(false);
+          return;
         } catch (error) {
           attempts++;
           if (attempts >= maxAttempts) {
-            // Final failure: add back to buffer
             setBuffer((prev) => [...annotationsToSave, ...prev]);
+            toast({
+              title: "Erreur de sauvegarde",
+              description:
+                error instanceof Error ? error.message : "Erreur inconnue",
+              variant: "destructive",
+            });
+            setIsSaving(false);
             throw error;
           }
-          // Wait before retry: 1s, 3s, 5s
           await new Promise((resolve) =>
             setTimeout(resolve, attempts * 2000 - 1000)
           );
         }
       }
     },
-    [videoId, saveBatch, isSaving]
+    [videoId, utils, toast]
   );
 
-  // Fonction d'ajout au buffer
-  const addToBuffer = useCallback((annotation: Annotation) => {
-    setBuffer((prev) => {
-      // Check if frame already in buffer, replace it
-      const existing = prev.findIndex(
-        (a) => a.frameNumber === annotation.frameNumber
-      );
-      if (existing !== -1) {
-        const newBuffer = [...prev];
-        newBuffer[existing] = annotation;
-        return newBuffer;
-      }
-      return [...prev, annotation];
-    });
-  }, []);
+  const doSaveRef = useRef(doSave);
+  doSaveRef.current = doSave;
 
-  // Sauvegarde manuelle
+  // Schedule auto-save timeout when buffer goes from empty to non-empty
+  const scheduleAutoSave = useCallback(() => {
+    // Clear any existing timeout
+    if (autoSaveTimeoutRef.current) {
+      clearTimeout(autoSaveTimeoutRef.current);
+    }
+
+    bufferStartTimeRef.current = Date.now();
+
+    autoSaveTimeoutRef.current = setTimeout(() => {
+      const currentBuffer = bufferRef.current;
+      if (currentBuffer.length === 0 || isSavingRef.current) return;
+
+      const batchToSave = [...currentBuffer];
+      setBuffer([]);
+      bufferStartTimeRef.current = null;
+
+      void doSaveRef.current(batchToSave);
+    }, autoSaveDelay);
+  }, [autoSaveDelay]);
+
+  const addToBuffer = useCallback(
+    (annotation: Annotation) => {
+      setBuffer((prev) => {
+        const isFirstItem = prev.length === 0;
+        const existing = prev.findIndex(
+          (a) => a.frameNumber === annotation.frameNumber
+        );
+        if (existing !== -1) {
+          const newBuffer = [...prev];
+          newBuffer[existing] = annotation;
+          return newBuffer;
+        }
+
+        // Schedule auto-save when buffer goes from 0 → 1
+        if (isFirstItem) {
+          // Use queueMicrotask to avoid setState-during-render issues
+          queueMicrotask(() => scheduleAutoSave());
+        }
+
+        return [...prev, annotation];
+      });
+    },
+    [scheduleAutoSave]
+  );
+
   const manualSave = useCallback(async () => {
-    if (buffer.length === 0) {
+    const currentBuffer = bufferRef.current;
+    if (currentBuffer.length === 0) {
       toast({
         title: "Rien à sauvegarder",
         description: "Le buffer est vide",
@@ -105,42 +144,55 @@ export function useAnnotationBuffer({
       return;
     }
 
-    const batchToSave = [...buffer];
-    setBuffer([]); // Clear buffer
+    // Cancel pending auto-save
+    if (autoSaveTimeoutRef.current) {
+      clearTimeout(autoSaveTimeoutRef.current);
+      autoSaveTimeoutRef.current = null;
+    }
+    bufferStartTimeRef.current = null;
+
+    const batchToSave = [...currentBuffer];
+    setBuffer([]);
 
     try {
-      await saveBufferToServer(batchToSave);
-      toast({
-        title: "Sauvegarde manuelle effectuée",
-        description: `${batchToSave.length} annotation(s) sauvegardée(s)`,
-      });
-    } catch (error) {
-      // Buffer already restored in saveBufferToServer on error
+      await doSaveRef.current(batchToSave);
+    } catch {
+      // Buffer already restored in doSave on error
     }
-  }, [buffer, saveBufferToServer, toast]);
+  }, [toast]);
 
-  // Auto-save every X seconds
+  // Countdown tick (every 1s)
   useEffect(() => {
-    intervalRef.current = setInterval(() => {
-      if (buffer.length === 0) return;
+    const id = setInterval(() => {
+      const startTime = bufferStartTimeRef.current;
+      if (startTime === null || bufferRef.current.length === 0) {
+        setCountdown(null);
+        return;
+      }
+      const elapsed = Date.now() - startTime;
+      const remaining = Math.max(
+        Math.ceil((autoSaveDelay - elapsed) / 1000),
+        0
+      );
+      setCountdown(remaining);
+    }, 1000);
 
-      const batchToSave = [...buffer];
-      setBuffer([]); // Clear buffer
+    return () => clearInterval(id);
+  }, [autoSaveDelay]);
 
-      void saveBufferToServer(batchToSave);
-    }, autoSaveInterval);
-
+  // Cleanup timeout on unmount
+  useEffect(() => {
     return () => {
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current);
+      if (autoSaveTimeoutRef.current) {
+        clearTimeout(autoSaveTimeoutRef.current);
       }
     };
-  }, [buffer, autoSaveInterval, saveBufferToServer]);
+  }, []);
 
   // Save before page unload
   useEffect(() => {
     const handleBeforeUnload = (e: BeforeUnloadEvent) => {
-      if (buffer.length > 0) {
+      if (bufferRef.current.length > 0) {
         e.preventDefault();
         e.returnValue = "";
       }
@@ -148,7 +200,7 @@ export function useAnnotationBuffer({
 
     window.addEventListener("beforeunload", handleBeforeUnload);
     return () => window.removeEventListener("beforeunload", handleBeforeUnload);
-  }, [buffer]);
+  }, []);
 
   return {
     buffer,
@@ -156,5 +208,6 @@ export function useAnnotationBuffer({
     manualSave,
     pendingCount: buffer.length,
     isSaving,
+    countdown,
   };
 }

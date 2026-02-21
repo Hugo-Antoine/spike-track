@@ -23,13 +23,15 @@ export function AnnotationCanvas({
   frameNumber,
   cloudinaryFolder,
   totalFrames,
-  previousAnnotations,
+  previousAnnotations: _previousAnnotations,
   currentAnnotation,
   onAnnotate,
   isAnnotated: _isAnnotated,
 }: AnnotationCanvasProps) {
   const [hasError, setHasError] = useState(false);
   const [mousePos, setMousePos] = useState<{ x: number; y: number } | null>(null);
+  const [zoom, setZoom] = useState(2);
+  const [, forceUpdate] = useState(0);
   const activeImageRef = useRef<HTMLImageElement | null>(null);
 
   const handleClick = (e: React.MouseEvent<HTMLDivElement>) => {
@@ -65,6 +67,11 @@ export function AnnotationCanvas({
     setMousePos(null);
   };
 
+  const handleWheel = (e: React.WheelEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setZoom((prev) => Math.min(Math.max(prev - e.deltaY * 0.01, 1.5), 10));
+  };
+
   if (hasError) {
     return (
       <div className="flex h-full items-center justify-center p-4">
@@ -83,52 +90,34 @@ export function AnnotationCanvas({
       cloudinaryFolder={cloudinaryFolder}
       totalFrames={totalFrames}
       currentFrame={frameNumber}
+      bufferBefore={5}
+      bufferAfter={5}
       activeImageRef={activeImageRef}
       onClick={handleClick}
       onMouseMove={handleMouseMove}
       onMouseLeave={handleMouseLeave}
+      onWheel={handleWheel}
+      onFrameLoad={() => forceUpdate((n) => n + 1)}
       onFrameError={(frame) => {
         if (frame === frameNumber) {
           setHasError(true);
         }
       }}
-      className="flex h-full items-center justify-center overflow-hidden bg-muted/30 p-4"
+      className="flex h-full cursor-none items-center justify-center overflow-hidden bg-muted/30 p-4"
     >
-      {/* SVG Overlay for annotations */}
-      {activeImageRef.current && (
+      {/* SVG Overlay for current annotation */}
+      {activeImageRef.current && currentAnnotation && currentAnnotation.ballVisible && (
         <svg
           className="pointer-events-none absolute left-0 top-0 h-full w-full"
           style={{ zIndex: 10 }}
         >
-          {/* Previous annotations (green dots with fade) */}
-          {previousAnnotations.map((ann, idx) => {
-            const opacity = 1 - idx * 0.15;
-            const rect = activeImageRef.current!.getBoundingClientRect();
-            const pixelX = ann.x * rect.width;
-            const pixelY = ann.y * rect.height;
-
-            return (
-              <circle
-                key={ann.frameNumber}
-                cx={pixelX}
-                cy={pixelY}
-                r={6}
-                fill="green"
-                opacity={opacity}
-              />
-            );
-          })}
-
-          {/* Current annotation (red dot) */}
-          {currentAnnotation && currentAnnotation.ballVisible && (
-            <circle
-              cx={currentAnnotation.x * activeImageRef.current.getBoundingClientRect().width}
-              cy={currentAnnotation.y * activeImageRef.current.getBoundingClientRect().height}
-              r={8}
-              fill="red"
-              opacity={0.9}
-            />
-          )}
+          <circle
+            cx={currentAnnotation.x * activeImageRef.current.getBoundingClientRect().width}
+            cy={currentAnnotation.y * activeImageRef.current.getBoundingClientRect().height}
+            r={4}
+            fill="red"
+            opacity={0.9}
+          />
         </svg>
       )}
 
@@ -139,6 +128,7 @@ export function AnnotationCanvas({
           mouseX={mousePos.x}
           mouseY={mousePos.y}
           imageElement={activeImageRef.current}
+          zoom={zoom}
         />
       )}
     </ImageSequenceViewer>

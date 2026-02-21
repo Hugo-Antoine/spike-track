@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { useImageBuffer } from "~/hooks/use-image-buffer";
 import { cn } from "~/lib/utils";
 
@@ -15,6 +16,7 @@ interface ImageSequenceViewerProps {
   onClick?: (e: React.MouseEvent<HTMLDivElement>) => void;
   onMouseMove?: (e: React.MouseEvent<HTMLDivElement>) => void;
   onMouseLeave?: () => void;
+  onWheel?: (e: React.WheelEvent<HTMLDivElement>) => void;
   children?: React.ReactNode;
   className?: string;
 }
@@ -31,9 +33,12 @@ export function ImageSequenceViewer({
   onClick,
   onMouseMove,
   onMouseLeave,
+  onWheel,
   children,
   className,
 }: ImageSequenceViewerProps) {
+  const [loadedFrame, setLoadedFrame] = useState<number | null>(null);
+
   const { images } = useImageBuffer({
     cloudinaryFolder,
     totalFrames,
@@ -50,6 +55,7 @@ export function ImageSequenceViewer({
       onClick={onClick}
       onMouseMove={onMouseMove}
       onMouseLeave={onMouseLeave}
+      onWheel={onWheel}
     >
       {/* Container for images - maintains aspect ratio from active image */}
       <div className="relative">
@@ -64,6 +70,12 @@ export function ImageSequenceViewer({
               alt={`Frame ${frame}`}
               className="max-h-full max-w-full select-none"
               draggable={false}
+              onLoad={() => {
+                if (isActive) {
+                  setLoadedFrame(frame);
+                  onFrameLoad?.(frame);
+                }
+              }}
               style={{
                 // Active image is relative to set container dimensions
                 // Others are absolute and stacked underneath

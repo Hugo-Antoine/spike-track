@@ -29,13 +29,10 @@ export function MagnifyingGlass({
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    // Position de la loupe (offset pour ne pas cacher)
-    const offsetX = 30;
-    const offsetY = 30;
-
+    // Position de la loupe (centrée sur le curseur)
     setPosition({
-      x: mouseX + offsetX,
-      y: mouseY + offsetY,
+      x: mouseX - size / 2,
+      y: mouseY - size / 2,
     });
 
     // Clear canvas
