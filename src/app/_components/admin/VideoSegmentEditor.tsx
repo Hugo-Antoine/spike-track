@@ -1,6 +1,13 @@
 "use client";
 
-import { useState, useRef, useCallback, useEffect } from "react";
+import {
+  useState,
+  useRef,
+  useCallback,
+  useEffect,
+  forwardRef,
+  useImperativeHandle,
+} from "react";
 import { Button } from "~/components/ui/button";
 import { Input } from "~/components/ui/input";
 import {
@@ -29,6 +36,10 @@ export interface Segment {
   endTime: number;
 }
 
+export interface VideoSegmentEditorHandle {
+  seekToTime: (time: number) => void;
+}
+
 interface VideoSegmentEditorProps {
   videoUrl: string;
   sourceName: string;
@@ -36,7 +47,7 @@ interface VideoSegmentEditorProps {
   onSegmentsChange: (segments: Segment[]) => void;
 }
 
-function formatTime(seconds: number): string {
+export function formatTime(seconds: number): string {
   const h = Math.floor(seconds / 3600);
   const m = Math.floor((seconds % 3600) / 60);
   const s = Math.floor(seconds % 60);
@@ -47,12 +58,13 @@ function formatTime(seconds: number): string {
   return `${m}:${String(s).padStart(2, "0")}.${String(ms).padStart(2, "0")}`;
 }
 
-export function VideoSegmentEditor({
-  videoUrl,
-  sourceName,
-  initialSegments = [],
-  onSegmentsChange,
-}: VideoSegmentEditorProps) {
+export const VideoSegmentEditor = forwardRef<
+  VideoSegmentEditorHandle,
+  VideoSegmentEditorProps
+>(function VideoSegmentEditor(
+  { videoUrl, sourceName, initialSegments = [], onSegmentsChange },
+  ref,
+) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -121,10 +133,12 @@ export function VideoSegmentEditor({
     setSegments((prev) => prev.map((s) => (s.id === id ? { ...s, name } : s)));
   };
 
-  const seekToTime = (time: number) => {
+  const seekToTime = useCallback((time: number) => {
     const v = videoRef.current;
     if (v) v.currentTime = time;
-  };
+  }, []);
+
+  useImperativeHandle(ref, () => ({ seekToTime }), [seekToTime]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -344,4 +358,4 @@ export function VideoSegmentEditor({
       )}
     </div>
   );
-}
+});
