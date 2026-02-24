@@ -138,7 +138,7 @@ export const protectedProcedure = t.procedure
             ...(ctx.session.user as typeof ctx.session.user & {
               role: "USER" | "ANNOTATOR" | "ADMIN";
             }),
-            permissions: (dbUser?.permissions ?? []) as string[],
+            permissions: dbUser?.permissions ?? [],
           },
         },
       },

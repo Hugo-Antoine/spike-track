@@ -30,8 +30,10 @@ import { Button } from "~/components/ui/button";
 import { Slider } from "~/components/ui/slider";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "~/components/ui/tabs";
 import { useToast } from "~/hooks/use-toast";
-import { Shield, Users, Settings2, Film } from "lucide-react";
+import { Shield, Users, Settings2, Film, Cpu, KeyRound } from "lucide-react";
 import { VideoImporter } from "~/app/_components/admin/VideoImporter";
+import { BatchProcessing } from "~/app/_components/admin/BatchProcessing";
+import { PermissionEditor } from "~/app/_components/admin/PermissionEditor";
 
 export default function AdminPage() {
   const { toast } = useToast();
@@ -43,6 +45,9 @@ export default function AdminPage() {
 
   const [reannotationPct, setReannotationPct] = useState(30);
   const [isDirty, setIsDirty] = useState(false);
+  const [editingPermissionsFor, setEditingPermissionsFor] = useState<
+    string | null
+  >(null);
 
   useEffect(() => {
     if (queueConfig) {
@@ -106,6 +111,10 @@ export default function AdminPage() {
     );
   }
 
+  const editingUser = editingPermissionsFor
+    ? users?.find((u) => u.id === editingPermissionsFor)
+    : null;
+
   return (
     <div className="container mx-auto py-8">
       <div className="mb-8 flex items-center gap-3">
@@ -126,6 +135,10 @@ export default function AdminPage() {
             <Film className="h-4 w-4" />
             Import vidéo
           </TabsTrigger>
+          <TabsTrigger value="processing" className="gap-2">
+            <Cpu className="h-4 w-4" />
+            Traitement
+          </TabsTrigger>
           <TabsTrigger value="users" className="gap-2">
             <Users className="h-4 w-4" />
             Utilisateurs
@@ -141,6 +154,11 @@ export default function AdminPage() {
           <VideoImporter />
         </TabsContent>
 
+        {/* Processing Tab */}
+        <TabsContent value="processing">
+          <BatchProcessing />
+        </TabsContent>
+
         {/* Users Tab */}
         <TabsContent value="users">
           <Card>
@@ -150,8 +168,8 @@ export default function AdminPage() {
                 Utilisateurs ({users?.length ?? 0})
               </CardTitle>
               <CardDescription>
-                Changez les rôles entre USER et ANNOTATOR. Le rôle ADMIN ne peut
-                être défini qu&apos;en base de données.
+                Changez les rôles entre USER et ANNOTATOR. Cliquez sur
+                &quot;Permissions&quot; pour configurer les accès granulaires.
               </CardDescription>
             </CardHeader>
             <CardContent>
@@ -162,29 +180,28 @@ export default function AdminPage() {
                     <TableHead>Nom</TableHead>
                     <TableHead>Inscrit le</TableHead>
                     <TableHead>Rôle</TableHead>
+                    <TableHead>Permissions</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {users?.map((user) => (
-                    <TableRow key={user.id}>
-                      <TableCell className="font-medium">
-                        {user.email}
-                      </TableCell>
-                      <TableCell>{user.name}</TableCell>
+                  {users?.map((u) => (
+                    <TableRow key={u.id}>
+                      <TableCell className="font-medium">{u.email}</TableCell>
+                      <TableCell>{u.name}</TableCell>
                       <TableCell>
-                        {new Date(user.createdAt).toLocaleDateString("fr-FR")}
+                        {new Date(u.createdAt).toLocaleDateString("fr-FR")}
                       </TableCell>
                       <TableCell>
-                        {user.role === "ADMIN" ? (
-                          <Badge variant={getRoleBadgeVariant(user.role)}>
-                            {user.role}
+                        {u.role === "ADMIN" ? (
+                          <Badge variant={getRoleBadgeVariant(u.role)}>
+                            {u.role}
                           </Badge>
                         ) : (
                           <Select
-                            value={user.role}
+                            value={u.role}
                             onValueChange={(value: "USER" | "ANNOTATOR") => {
                               updateRole.mutate({
-                                userId: user.id,
+                                userId: u.id,
                                 role: value,
                               });
                             }}
@@ -202,12 +219,39 @@ export default function AdminPage() {
                           </Select>
                         )}
                       </TableCell>
+                      <TableCell>
+                        {u.role === "ADMIN" ? (
+                          <Badge variant="default">Toutes</Badge>
+                        ) : (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => setEditingPermissionsFor(u.id)}
+                          >
+                            <KeyRound className="mr-1 h-3 w-3" />
+                            {u.permissions.length > 0
+                              ? `${u.permissions.length} permission${u.permissions.length > 1 ? "s" : ""}`
+                              : "Par défaut"}
+                          </Button>
+                        )}
+                      </TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
               </Table>
             </CardContent>
           </Card>
+
+          {editingUser && (
+            <div className="mt-4">
+              <PermissionEditor
+                userId={editingUser.id}
+                userName={editingUser.name}
+                initialPermissions={editingUser.permissions}
+                onClose={() => setEditingPermissionsFor(null)}
+              />
+            </div>
+          )}
         </TabsContent>
 
         {/* Config Tab */}
