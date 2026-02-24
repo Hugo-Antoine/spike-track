@@ -2,24 +2,17 @@ import { z } from "zod";
 import { eq } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 
-import { createTRPCRouter, protectedProcedure } from "~/server/api/trpc";
+import {
+  createTRPCRouter,
+  protectedProcedure,
+  requirePermission,
+} from "~/server/api/trpc";
 import { user, queueConfig } from "~/server/db/schema";
+import { PERMISSIONS, type Permission } from "~/lib/permissions";
 
-/**
- * Admin router - protected by role check
- */
 export const adminRouter = createTRPCRouter({
-  /**
-   * Get all users (admin only)
-   */
   getAllUsers: protectedProcedure.query(async ({ ctx }) => {
-    // Check if user is admin
-    if (ctx.session.user.role !== "ADMIN") {
-      throw new TRPCError({
-        code: "FORBIDDEN",
-        message: "Admin access required",
-      });
-    }
+    requirePermission(ctx, "admin:view_users");
 
     const users = await ctx.db.query.user.findMany({
       orderBy: (users, { desc }) => [desc(users.createdAt)],
@@ -29,6 +22,7 @@ export const adminRouter = createTRPCRouter({
         email: true,
         role: true,
         image: true,
+        permissions: true,
         createdAt: true,
       },
     });
@@ -36,26 +30,16 @@ export const adminRouter = createTRPCRouter({
     return users;
   }),
 
-  /**
-   * Update user role (admin only, cannot promote to ADMIN)
-   */
   updateUserRole: protectedProcedure
     .input(
       z.object({
         userId: z.string(),
-        role: z.enum(["USER", "ANNOTATOR"]), // Cannot set ADMIN from interface
+        role: z.enum(["USER", "ANNOTATOR"]),
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      // Check if user is admin
-      if (ctx.session.user.role !== "ADMIN") {
-        throw new TRPCError({
-          code: "FORBIDDEN",
-          message: "Admin access required",
-        });
-      }
+      requirePermission(ctx, "admin:manage_roles");
 
-      // Prevent changing own role
       if (input.userId === ctx.session.user.id) {
         throw new TRPCError({
           code: "BAD_REQUEST",
@@ -71,13 +55,64 @@ export const adminRouter = createTRPCRouter({
       return { success: true };
     }),
 
-  getQueueConfig: protectedProcedure.query(async ({ ctx }) => {
-    if (ctx.session.user.role !== "ADMIN") {
-      throw new TRPCError({
-        code: "FORBIDDEN",
-        message: "Admin access required",
+  getUserPermissions: protectedProcedure
+    .input(z.object({ userId: z.string() }))
+    .query(async ({ ctx, input }) => {
+      requirePermission(ctx, "admin:manage_roles");
+
+      const dbUser = await ctx.db.query.user.findFirst({
+        where: eq(user.id, input.userId),
+        columns: {
+          id: true,
+          name: true,
+          email: true,
+          role: true,
+          permissions: true,
+        },
       });
-    }
+
+      if (!dbUser) throw new TRPCError({ code: "NOT_FOUND" });
+
+      return dbUser;
+    }),
+
+  updateUserPermissions: protectedProcedure
+    .input(
+      z.object({
+        userId: z.string(),
+        permissions: z.array(z.string()),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      requirePermission(ctx, "admin:manage_roles");
+
+      if (input.userId === ctx.session.user.id) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Cannot modify your own permissions",
+        });
+      }
+
+      // Validate all permissions
+      const validPermissions = new Set<string>(PERMISSIONS);
+      const invalid = input.permissions.filter((p) => !validPermissions.has(p));
+      if (invalid.length > 0) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: `Invalid permissions: ${invalid.join(", ")}`,
+        });
+      }
+
+      await ctx.db
+        .update(user)
+        .set({ permissions: input.permissions as Permission[] })
+        .where(eq(user.id, input.userId));
+
+      return { success: true };
+    }),
+
+  getQueueConfig: protectedProcedure.query(async ({ ctx }) => {
+    requirePermission(ctx, "admin:manage_config");
 
     let config = await ctx.db.query.queueConfig.findFirst();
 
@@ -99,12 +134,7 @@ export const adminRouter = createTRPCRouter({
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      if (ctx.session.user.role !== "ADMIN") {
-        throw new TRPCError({
-          code: "FORBIDDEN",
-          message: "Admin access required",
-        });
-      }
+      requirePermission(ctx, "admin:manage_config");
 
       const config = await ctx.db.query.queueConfig.findFirst();
 

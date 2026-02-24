@@ -1,10 +1,15 @@
 import { eq, and, sql } from "drizzle-orm";
 
-import { createTRPCRouter, protectedProcedure } from "~/server/api/trpc";
+import {
+  createTRPCRouter,
+  protectedProcedure,
+  requirePermission,
+} from "~/server/api/trpc";
 import { userVideoProgress } from "~/server/db/schema";
 
 export const queueRouter = createTRPCRouter({
   assignNextVideo: protectedProcedure.mutation(async ({ ctx }) => {
+    requirePermission(ctx, "queue:request_video");
     const userId = ctx.session.user.id;
 
     // 1. Check for in_progress video

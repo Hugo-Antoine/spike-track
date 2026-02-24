@@ -1,8 +1,12 @@
 import { z } from "zod";
-import { eq, desc, sql } from "drizzle-orm";
+import { eq, and, desc, sql } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 
-import { createTRPCRouter, protectedProcedure } from "~/server/api/trpc";
+import {
+  createTRPCRouter,
+  protectedProcedure,
+  requirePermission,
+} from "~/server/api/trpc";
 import { videos, sourceVideos } from "~/server/db/schema";
 import {
   getPresignedUrl,
@@ -17,12 +21,6 @@ import { env } from "~/env";
 
 const MULTIPART_THRESHOLD = 200 * 1024 * 1024; // 200 MB
 const PART_SIZE = 100 * 1024 * 1024; // 100 MB per part
-
-function requireAdmin(role: string) {
-  if (role !== "ADMIN") {
-    throw new TRPCError({ code: "FORBIDDEN", message: "Admin only" });
-  }
-}
 
 export const videoRouter = createTRPCRouter({
   getAll: protectedProcedure.query(async ({ ctx }) => {
@@ -53,7 +51,7 @@ export const videoRouter = createTRPCRouter({
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      requireAdmin(ctx.session.user.role);
+      requirePermission(ctx, "video:upload");
 
       const ext = input.filename.replace(/.*\./, ".");
       const s3Key = `sources/${crypto.randomUUID()}${ext}`;
@@ -92,7 +90,7 @@ export const videoRouter = createTRPCRouter({
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      requireAdmin(ctx.session.user.role);
+      requirePermission(ctx, "video:upload");
       await completeMultipartUpload(input.s3Key, input.uploadId, input.parts);
       return { success: true };
     }),
@@ -105,7 +103,7 @@ export const videoRouter = createTRPCRouter({
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      requireAdmin(ctx.session.user.role);
+      requirePermission(ctx, "video:upload");
       await abortMultipartUpload(input.s3Key, input.uploadId);
       return { success: true };
     }),
@@ -120,7 +118,7 @@ export const videoRouter = createTRPCRouter({
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      requireAdmin(ctx.session.user.role);
+      requirePermission(ctx, "video:create_source");
 
       // No ffprobe — metadata will be filled by Lambda later
       const [source] = await ctx.db
@@ -135,7 +133,7 @@ export const videoRouter = createTRPCRouter({
     }),
 
   listSourceVideos: protectedProcedure.query(async ({ ctx }) => {
-    requireAdmin(ctx.session.user.role);
+    requirePermission(ctx, "video:list_sources");
 
     const sources = await ctx.db.query.sourceVideos.findMany({
       orderBy: [desc(sourceVideos.createdAt)],
@@ -152,7 +150,7 @@ export const videoRouter = createTRPCRouter({
   getSourcePlaybackUrl: protectedProcedure
     .input(z.object({ sourceVideoId: z.string().uuid() }))
     .query(async ({ ctx, input }) => {
-      requireAdmin(ctx.session.user.role);
+      requirePermission(ctx, "video:list_sources");
 
       const source = await ctx.db.query.sourceVideos.findFirst({
         where: eq(sourceVideos.id, input.sourceVideoId),
@@ -163,9 +161,9 @@ export const videoRouter = createTRPCRouter({
       return { url, source };
     }),
 
-  // --- Segment processing via Lambda ---
+  // --- Segment management ---
 
-  processSegments: protectedProcedure
+  saveSegments: protectedProcedure
     .input(
       z.object({
         sourceVideoId: z.string().uuid(),
@@ -179,7 +177,7 @@ export const videoRouter = createTRPCRouter({
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      requireAdmin(ctx.session.user.role);
+      requirePermission(ctx, "video:create_segments");
 
       const source = await ctx.db.query.sourceVideos.findFirst({
         where: eq(sourceVideos.id, input.sourceVideoId),
@@ -192,29 +190,18 @@ export const videoRouter = createTRPCRouter({
         const segmentId = crypto.randomUUID();
         const s3Prefix = `frames/${segmentId}/`;
 
-        // Insert video record with "processing" status
         await ctx.db.insert(videos).values({
           id: segmentId,
           sourceVideoId: source.id,
           name: segment.name,
           s3FramesPrefix: s3Prefix,
           startTimeSeconds: segment.startTime,
+          endTimeSeconds: segment.endTime,
           totalFrames: 0,
           fps: 30,
           width: 1280,
           height: 720,
-          status: "processing",
-        });
-
-        // Invoke Lambda async (fire-and-forget)
-        await invokeLambdaAsync(env.LAMBDA_PROCESS_SEGMENT_ARN, {
-          sourceS3Key: source.s3Key,
-          segmentId,
-          s3FramesPrefix: s3Prefix,
-          startTime: segment.startTime,
-          endTime: segment.endTime,
-          s3Bucket: env.S3_BUCKET_NAME,
-          databaseUrl: env.DATABASE_URL,
+          status: "pending",
         });
 
         segmentIds.push(segmentId);
@@ -223,10 +210,70 @@ export const videoRouter = createTRPCRouter({
       return { segmentIds };
     }),
 
+  // --- Batch processing via Lambda ---
+
+  launchProcessing: protectedProcedure
+    .input(z.object({ sourceVideoId: z.string().uuid() }))
+    .mutation(async ({ ctx, input }) => {
+      requirePermission(ctx, "video:launch_processing");
+
+      const source = await ctx.db.query.sourceVideos.findFirst({
+        where: eq(sourceVideos.id, input.sourceVideoId),
+      });
+      if (!source) throw new TRPCError({ code: "NOT_FOUND" });
+
+      // Get all pending segments for this source
+      const pendingSegments = await ctx.db.query.videos.findMany({
+        where: and(
+          eq(videos.sourceVideoId, input.sourceVideoId),
+          eq(videos.status, "pending"),
+        ),
+        orderBy: [videos.startTimeSeconds],
+      });
+
+      if (pendingSegments.length === 0) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "No pending segments to process",
+        });
+      }
+
+      // Batch into groups of MAX_SEGMENTS_PER_LAMBDA
+      const MAX_SEGMENTS_PER_LAMBDA = 30;
+      const batches: (typeof pendingSegments)[] = [];
+      for (
+        let i = 0;
+        i < pendingSegments.length;
+        i += MAX_SEGMENTS_PER_LAMBDA
+      ) {
+        batches.push(pendingSegments.slice(i, i + MAX_SEGMENTS_PER_LAMBDA));
+      }
+
+      // Invoke Lambda for each batch (fire-and-forget)
+      for (const batch of batches) {
+        await invokeLambdaAsync(env.LAMBDA_PROCESS_SEGMENT_ARN, {
+          sourceS3Key: source.s3Key,
+          segments: batch.map((seg) => ({
+            segmentId: seg.id,
+            s3FramesPrefix: seg.s3FramesPrefix,
+            startTime: seg.startTimeSeconds,
+            endTime: seg.endTimeSeconds,
+          })),
+          s3Bucket: env.S3_BUCKET_NAME,
+          databaseUrl: env.DATABASE_URL,
+        });
+      }
+
+      return {
+        launched: pendingSegments.length,
+        batches: batches.length,
+      };
+    }),
+
   getProcessingStatus: protectedProcedure
     .input(z.object({ sourceVideoId: z.string().uuid() }))
     .query(async ({ ctx, input }) => {
-      requireAdmin(ctx.session.user.role);
+      requirePermission(ctx, "video:view_processing");
 
       const segmentList = await ctx.db.query.videos.findMany({
         where: eq(videos.sourceVideoId, input.sourceVideoId),
@@ -243,14 +290,16 @@ export const videoRouter = createTRPCRouter({
       const allReady =
         segments.length > 0 && segments.every((s) => s.status === "ready");
       const hasError = segments.some((s) => s.status === "error");
+      const hasPending = segments.some((s) => s.status === "pending");
+      const hasProcessing = segments.some((s) => s.status === "processing");
 
-      return { segments, allReady, hasError };
+      return { segments, allReady, hasError, hasPending, hasProcessing };
     }),
 
   deleteSourceVideo: protectedProcedure
     .input(z.object({ id: z.string().uuid() }))
     .mutation(async ({ ctx, input }) => {
-      requireAdmin(ctx.session.user.role);
+      requirePermission(ctx, "video:delete_source");
 
       // Check no segments exist
       const segmentCount = await ctx.db

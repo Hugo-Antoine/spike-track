@@ -1,7 +1,11 @@
 import { z } from "zod";
 import { eq, and, sql, desc } from "drizzle-orm";
 
-import { createTRPCRouter, protectedProcedure } from "~/server/api/trpc";
+import {
+  createTRPCRouter,
+  protectedProcedure,
+  requirePermission,
+} from "~/server/api/trpc";
 import { annotations, userVideoProgress, videos } from "~/server/db/schema";
 import { getFrameUrl } from "~/lib/frame-url";
 
@@ -36,6 +40,7 @@ export const annotationRouter = createTRPCRouter({
    * Get user's progress dashboard data
    */
   getMyProgress: protectedProcedure.query(async ({ ctx }) => {
+    requirePermission(ctx, "annotation:view_own");
     const userId = ctx.session.user.id;
 
     // Get all user's progress records
@@ -51,8 +56,11 @@ export const annotationRouter = createTRPCRouter({
       .filter((p) => p.status === "in_progress")
       .sort((a, b) => b.lastActivity.getTime() - a.lastActivity.getTime())[0];
 
-    // Completed videos
+    // Completed videos (ready for review/validation)
     const completed = progressRecords.filter((p) => p.status === "completed");
+
+    // Validated videos (locked, read-only)
+    const validated = progressRecords.filter((p) => p.status === "validated");
 
     return {
       current: current
@@ -74,6 +82,14 @@ export const annotationRouter = createTRPCRouter({
         completedAt: c.completedAt,
         startedAt: c.startedAt,
       })),
+      validated: validated.map((v) => ({
+        id: v.video.id,
+        name: v.video.name,
+        totalFrames: v.video.totalFrames,
+        totalAnnotated: v.totalAnnotated,
+        completedAt: v.completedAt,
+        startedAt: v.startedAt,
+      })),
     };
   }),
 
@@ -83,6 +99,7 @@ export const annotationRouter = createTRPCRouter({
   getNextFrame: protectedProcedure
     .input(z.object({ videoId: z.string().uuid() }))
     .query(async ({ ctx, input }) => {
+      requirePermission(ctx, "annotation:view_own");
       const userId = ctx.session.user.id;
 
       // Get video details
@@ -211,13 +228,25 @@ export const annotationRouter = createTRPCRouter({
       z.object({
         videoId: z.string().uuid(),
         frameNumber: z.number(),
-        x: z.number().min(0).max(1).optional(), // Coordonnées relatives 0-1
-        y: z.number().min(0).max(1).optional(), // Coordonnées relatives 0-1
+        x: z.number().min(0).max(1).optional(),
+        y: z.number().min(0).max(1).optional(),
         ballVisible: z.boolean(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
+      requirePermission(ctx, "annotation:annotate");
       const userId = ctx.session.user.id;
+
+      // Block writes on validated videos
+      const progress = await ctx.db.query.userVideoProgress.findFirst({
+        where: and(
+          eq(userVideoProgress.userId, userId),
+          eq(userVideoProgress.videoId, input.videoId),
+        ),
+      });
+      if (progress?.status === "validated") {
+        throw new Error("Cannot modify annotations on a validated video");
+      }
 
       // Validate: if ballVisible=true, x and y must be provided
       if (
@@ -310,7 +339,19 @@ export const annotationRouter = createTRPCRouter({
       }),
     )
     .mutation(async ({ ctx, input }) => {
+      requirePermission(ctx, "annotation:annotate");
       const userId = ctx.session.user.id;
+
+      // Block writes on validated videos
+      const progressCheck = await ctx.db.query.userVideoProgress.findFirst({
+        where: and(
+          eq(userVideoProgress.userId, userId),
+          eq(userVideoProgress.videoId, input.videoId),
+        ),
+      });
+      if (progressCheck?.status === "validated") {
+        throw new Error("Cannot modify annotations on a validated video");
+      }
 
       // Validate all annotations
       for (const ann of input.annotations) {
@@ -390,6 +431,105 @@ export const annotationRouter = createTRPCRouter({
     }),
 
   /**
+   * Mark a video as completed (all frames annotated)
+   */
+  markCompleted: protectedProcedure
+    .input(z.object({ videoId: z.string().uuid() }))
+    .mutation(async ({ ctx, input }) => {
+      requirePermission(ctx, "annotation:annotate");
+      const userId = ctx.session.user.id;
+
+      await ctx.db
+        .update(userVideoProgress)
+        .set({
+          status: "completed",
+          completedAt: new Date(),
+          lastActivity: new Date(),
+        })
+        .where(
+          and(
+            eq(userVideoProgress.userId, userId),
+            eq(userVideoProgress.videoId, input.videoId),
+          ),
+        );
+
+      return { success: true };
+    }),
+
+  /**
+   * Validate a completed video (lock annotations, read-only)
+   */
+  validateVideo: protectedProcedure
+    .input(z.object({ videoId: z.string().uuid() }))
+    .mutation(async ({ ctx, input }) => {
+      requirePermission(ctx, "annotation:validate");
+      const userId = ctx.session.user.id;
+
+      const progress = await ctx.db.query.userVideoProgress.findFirst({
+        where: and(
+          eq(userVideoProgress.userId, userId),
+          eq(userVideoProgress.videoId, input.videoId),
+        ),
+      });
+
+      if (progress?.status !== "completed") {
+        throw new Error("Video must be completed before validation");
+      }
+
+      await ctx.db
+        .update(userVideoProgress)
+        .set({
+          status: "validated",
+          lastActivity: new Date(),
+        })
+        .where(
+          and(
+            eq(userVideoProgress.userId, userId),
+            eq(userVideoProgress.videoId, input.videoId),
+          ),
+        );
+
+      return { success: true };
+    }),
+
+  /**
+   * Reopen a completed video for further editing
+   */
+  reopenVideo: protectedProcedure
+    .input(z.object({ videoId: z.string().uuid() }))
+    .mutation(async ({ ctx, input }) => {
+      requirePermission(ctx, "annotation:annotate");
+      const userId = ctx.session.user.id;
+
+      const progress = await ctx.db.query.userVideoProgress.findFirst({
+        where: and(
+          eq(userVideoProgress.userId, userId),
+          eq(userVideoProgress.videoId, input.videoId),
+        ),
+      });
+
+      if (!progress || progress.status === "validated") {
+        throw new Error("Cannot reopen a validated video");
+      }
+
+      await ctx.db
+        .update(userVideoProgress)
+        .set({
+          status: "in_progress",
+          completedAt: null,
+          lastActivity: new Date(),
+        })
+        .where(
+          and(
+            eq(userVideoProgress.userId, userId),
+            eq(userVideoProgress.videoId, input.videoId),
+          ),
+        );
+
+      return { success: true };
+    }),
+
+  /**
    * Get specific frame data (for navigation)
    */
   getFrame: protectedProcedure
@@ -400,6 +540,7 @@ export const annotationRouter = createTRPCRouter({
       }),
     )
     .query(async ({ ctx, input }) => {
+      requirePermission(ctx, "annotation:view_own");
       const userId = ctx.session.user.id;
 
       // Get video
@@ -462,6 +603,7 @@ export const annotationRouter = createTRPCRouter({
   getStats: protectedProcedure
     .input(z.object({ videoId: z.string().uuid() }))
     .query(async ({ ctx, input }) => {
+      requirePermission(ctx, "annotation:view_own");
       const userId = ctx.session.user.id;
 
       const progress = await ctx.db.query.userVideoProgress.findFirst({
@@ -508,6 +650,7 @@ export const annotationRouter = createTRPCRouter({
   getAllAnnotations: protectedProcedure
     .input(z.object({ videoId: z.string().uuid() }))
     .query(async ({ ctx, input }) => {
+      requirePermission(ctx, "annotation:view_own");
       const userId = ctx.session.user.id;
 
       const allAnnotations = await ctx.db.query.annotations.findMany({
