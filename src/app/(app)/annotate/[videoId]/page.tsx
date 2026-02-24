@@ -7,7 +7,6 @@ import { AnnotationCanvas } from "~/app/_components/annotation/AnnotationCanvas"
 import { AnnotationControls } from "~/app/_components/annotation/AnnotationControls";
 import { AnnotationStats } from "~/app/_components/annotation/AnnotationStats";
 import { Button } from "~/components/ui/button";
-import { Card } from "~/components/ui/card";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -18,7 +17,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "~/components/ui/alert-dialog";
-import { PartyPopper } from "lucide-react";
+import { Lock } from "lucide-react";
 import { useToast } from "~/hooks/use-toast";
 import { useAnnotationBuffer } from "~/hooks/use-annotation-buffer";
 import { useAnnotationData } from "~/hooks/use-annotation-data";
@@ -33,9 +32,10 @@ export default function AnnotatePage({
   const videoId = resolvedParams.videoId;
   const router = useRouter();
   const { toast } = useToast();
+  const utils = api.useUtils();
 
   const [currentFrame, setCurrentFrame] = useState(1);
-  const [isCompleted, setIsCompleted] = useState(false);
+  const [isReadOnly, setIsReadOnly] = useState(false);
   const [showNavigationWarning, setShowNavigationWarning] = useState(false);
   const [pendingNavigation, setPendingNavigation] = useState<string | null>(
     null,
@@ -45,7 +45,17 @@ export default function AnnotatePage({
   const { data: progressData } = api.annotation.getMyProgress.useQuery();
   useEffect(() => {
     if (progressData?.current && progressData.current.videoId !== videoId) {
-      router.replace(`/annotate/${progressData.current.videoId}`);
+      // Allow viewing validated/completed videos without redirect
+      const isReviewing =
+        progressData.completed.some((v) => v.id === videoId) ||
+        progressData.validated.some((v) => v.id === videoId);
+      if (!isReviewing) {
+        router.replace(`/annotate/${progressData.current.videoId}`);
+      }
+    }
+    // Set read-only if video is validated
+    if (progressData?.validated.some((v) => v.id === videoId)) {
+      setIsReadOnly(true);
     }
   }, [progressData, videoId, router]);
 
@@ -78,12 +88,7 @@ export default function AnnotatePage({
   const previousAnnotations = getPreviousVisible(currentFrame);
   const isAnnotated = currentAnnotation !== null;
 
-  // Check if all frames are annotated
-  useEffect(() => {
-    if (nextUnannotated?.completed) {
-      setIsCompleted(true);
-    }
-  }, [nextUnannotated]);
+  const allAnnotated = nextUnannotated?.completed === true;
 
   const handleSaveAndNavigate = async () => {
     await manualSave();
@@ -147,6 +152,8 @@ export default function AnnotatePage({
 
   // Handlers
   const handleAnnotate = (x: number, y: number) => {
+    if (isReadOnly) return;
+
     addToBuffer({
       frameNumber: currentFrame,
       x,
@@ -162,6 +169,8 @@ export default function AnnotatePage({
   };
 
   const handleNoBall = () => {
+    if (isReadOnly) return;
+
     addToBuffer({
       frameNumber: currentFrame,
       ballVisible: false,
@@ -196,50 +205,42 @@ export default function AnnotatePage({
     }
   };
 
-  const handleMarkCompleted = async () => {
-    toast({
-      title: "Vidéo marquée comme terminée",
-      description: "Vous pouvez retourner au dashboard",
-    });
-    router.push("/dashboard");
-  };
+  const markCompletedMut = api.annotation.markCompleted.useMutation({
+    onSuccess: () => {
+      void utils.annotation.getMyProgress.invalidate();
+      toast({
+        title: "Vidéo marquée comme terminée",
+        description: "Vous pouvez la revoir et la valider depuis le dashboard.",
+      });
+      router.push("/dashboard");
+    },
+    onError: (err) => {
+      toast({
+        title: "Erreur",
+        description: err.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  // Derive status for the badge
+  const videoStatus:
+    | "validated"
+    | "completed"
+    | "all_annotated"
+    | "in_progress" = isReadOnly
+    ? "validated"
+    : progressData?.completed.some((v) => v.id === videoId)
+      ? "completed"
+      : allAnnotated
+        ? "all_annotated"
+        : "in_progress";
 
   // Loading
   if (!video || isAnnotationsLoading || !stats) {
     return (
       <div className="flex min-h-screen items-center justify-center">
         <p>Loading...</p>
-      </div>
-    );
-  }
-
-  // Completion screen
-  if (isCompleted) {
-    return (
-      <div className="flex min-h-screen items-center justify-center">
-        <Card className="max-w-md p-12 text-center">
-          <PartyPopper className="mx-auto mb-6 h-16 w-16 text-green-500" />
-          <h1 className="mb-4 text-3xl font-bold">
-            Toutes les frames annotées !
-          </h1>
-          <p className="text-muted-foreground mb-8">
-            Vous avez annoté toutes les frames de cette vidéo. Vous pouvez
-            vérifier votre travail ou marquer la vidéo comme terminée.
-          </p>
-          <div className="flex flex-col gap-2">
-            <Button size="lg" onClick={handleMarkCompleted} className="w-full">
-              Marquer comme terminé
-            </Button>
-            <Button
-              size="lg"
-              variant="outline"
-              onClick={() => setIsCompleted(false)}
-              className="w-full"
-            >
-              Continuer la vérification
-            </Button>
-          </div>
-        </Card>
       </div>
     );
   }
@@ -252,6 +253,14 @@ export default function AnnotatePage({
   return (
     <>
       <div className="bg-background flex h-[calc(100dvh-2.5rem)] flex-col">
+        {/* Read-only banner */}
+        {isReadOnly && (
+          <div className="flex items-center justify-center gap-2 bg-yellow-100 px-4 py-1.5 text-sm text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-200">
+            <Lock className="h-3.5 w-3.5" />
+            Vidéo validée — consultation seule
+          </div>
+        )}
+
         {/* Stats Header */}
         <AnnotationStats
           videoName={video.name}
@@ -263,6 +272,9 @@ export default function AnnotatePage({
           isSaving={isSaving}
           countdown={countdown}
           onManualSave={manualSave}
+          videoStatus={videoStatus}
+          onMarkCompleted={() => markCompletedMut.mutate({ videoId })}
+          isMarkingCompleted={markCompletedMut.isPending}
         />
 
         {/* Canvas */}
