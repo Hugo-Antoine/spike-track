@@ -8,5 +8,5 @@ export default {
   dbCredentials: {
     url: env.DATABASE_URL,
   },
-  tablesFilter: ["spike-track_*"],
+  tablesFilter: ["pg-drizzle_*"],
 } satisfies Config;

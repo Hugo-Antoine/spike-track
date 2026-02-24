@@ -2,12 +2,34 @@ import { z } from "zod";
 import { eq, and, sql, desc } from "drizzle-orm";
 
 import { createTRPCRouter, protectedProcedure } from "~/server/api/trpc";
-import {
-  annotations,
-  userVideoProgress,
-  videos,
-} from "~/server/db/schema";
-import { getFrameUrl } from "~/lib/cloudinary.server";
+import { annotations, userVideoProgress, videos } from "~/server/db/schema";
+import { getFrameUrl } from "~/lib/frame-url";
+
+/**
+ * Build the image URL for a frame. Supports both new S3/CloudFront videos
+ * and legacy Cloudinary videos (for backwards compatibility).
+ */
+function buildFrameImageUrl(
+  video: {
+    s3FramesPrefix: string | null;
+    cloudinaryPublicId: string | null;
+    fps: number;
+  },
+  frameNumber: number,
+): string {
+  if (video.s3FramesPrefix) {
+    return getFrameUrl(video.s3FramesPrefix, frameNumber);
+  }
+  // Legacy Cloudinary fallback
+  const seconds = ((frameNumber - 1) / video.fps).toFixed(3);
+  const cloudName = process.env.NEXT_PUBLIC_CLOUDFRONT_DOMAIN
+    ? undefined
+    : process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME;
+  if (cloudName && video.cloudinaryPublicId) {
+    return `https://res.cloudinary.com/${cloudName}/video/upload/so_${seconds},w_1280,c_limit,q_auto,f_auto/${video.cloudinaryPublicId}.jpg`;
+  }
+  throw new Error("Video has no frame source configured");
+}
 
 export const annotationRouter = createTRPCRouter({
   /**
@@ -24,25 +46,13 @@ export const annotationRouter = createTRPCRouter({
       },
     });
 
-    // Get all available videos
-    const allVideos = await ctx.db.query.videos.findMany({
-      orderBy: [desc(videos.createdAt)],
-    });
-
     // Current video: most recent in_progress
     const current = progressRecords
       .filter((p) => p.status === "in_progress")
-      .sort(
-        (a, b) =>
-          b.lastActivity.getTime() - a.lastActivity.getTime()
-      )[0];
+      .sort((a, b) => b.lastActivity.getTime() - a.lastActivity.getTime())[0];
 
     // Completed videos
     const completed = progressRecords.filter((p) => p.status === "completed");
-
-    // Available videos: not started by this user
-    const progressVideoIds = new Set(progressRecords.map((p) => p.videoId));
-    const available = allVideos.filter((v) => !progressVideoIds.has(v.id));
 
     return {
       current: current
@@ -56,13 +66,6 @@ export const annotationRouter = createTRPCRouter({
             totalAnnotated: current.totalAnnotated,
           }
         : null,
-      available: available.map((v) => ({
-        id: v.id,
-        name: v.name,
-        totalFrames: v.totalFrames,
-        fps: v.fps,
-        createdAt: v.createdAt,
-      })),
       completed: completed.map((c) => ({
         id: c.video.id,
         name: c.video.name,
@@ -95,7 +98,7 @@ export const annotationRouter = createTRPCRouter({
       let progress = await ctx.db.query.userVideoProgress.findFirst({
         where: and(
           eq(userVideoProgress.userId, userId),
-          eq(userVideoProgress.videoId, input.videoId)
+          eq(userVideoProgress.videoId, input.videoId),
         ),
       });
 
@@ -106,7 +109,7 @@ export const annotationRouter = createTRPCRouter({
           .values({
             userId,
             videoId: input.videoId,
-            lastAnnotatedFrame: -1,
+            lastAnnotatedFrame: 0,
             totalAnnotated: 0,
             status: "in_progress",
             startedAt: new Date(),
@@ -116,12 +119,12 @@ export const annotationRouter = createTRPCRouter({
         progress = newProgress!;
       }
 
-      // Find next unannotated frame using PostgreSQL generate_series
+      // Find next unannotated frame using PostgreSQL generate_series (1-indexed)
       const nextFrameQuery = await ctx.db.execute(sql`
         SELECT frame_num
         FROM generate_series(
-          0::integer,
-          ${video.totalFrames - 1}::integer
+          1::integer,
+          ${video.totalFrames}::integer
         ) AS frame_num
         WHERE NOT EXISTS (
           SELECT 1
@@ -150,8 +153,8 @@ export const annotationRouter = createTRPCRouter({
           .where(
             and(
               eq(userVideoProgress.userId, userId),
-              eq(userVideoProgress.videoId, input.videoId)
-            )
+              eq(userVideoProgress.videoId, input.videoId),
+            ),
           );
 
         return { completed: true };
@@ -164,7 +167,7 @@ export const annotationRouter = createTRPCRouter({
         where: and(
           eq(annotations.videoId, input.videoId),
           eq(annotations.userId, userId),
-          eq(annotations.ballVisible, true)
+          eq(annotations.ballVisible, true),
         ),
         orderBy: [desc(annotations.frameNumber)],
         limit: 5,
@@ -176,7 +179,7 @@ export const annotationRouter = createTRPCRouter({
       });
 
       // Generate image URL
-      const imageUrl = getFrameUrl(video.cloudinaryFolder, frameNumber);
+      const imageUrl = buildFrameImageUrl(video, frameNumber);
 
       // Calculate progress stats
       const totalAnnotated = progress.totalAnnotated;
@@ -211,13 +214,16 @@ export const annotationRouter = createTRPCRouter({
         x: z.number().min(0).max(1).optional(), // Coordonnées relatives 0-1
         y: z.number().min(0).max(1).optional(), // Coordonnées relatives 0-1
         ballVisible: z.boolean(),
-      })
+      }),
     )
     .mutation(async ({ ctx, input }) => {
       const userId = ctx.session.user.id;
 
       // Validate: if ballVisible=true, x and y must be provided
-      if (input.ballVisible && (input.x === undefined || input.y === undefined)) {
+      if (
+        input.ballVisible &&
+        (input.x === undefined || input.y === undefined)
+      ) {
         throw new Error("x and y coordinates required when ball is visible");
       }
 
@@ -250,7 +256,7 @@ export const annotationRouter = createTRPCRouter({
       const currentProgress = await ctx.db.query.userVideoProgress.findFirst({
         where: and(
           eq(userVideoProgress.userId, userId),
-          eq(userVideoProgress.videoId, input.videoId)
+          eq(userVideoProgress.videoId, input.videoId),
         ),
       });
 
@@ -263,16 +269,14 @@ export const annotationRouter = createTRPCRouter({
             AND ${annotations.userId} = ${userId}
         `);
 
-        const totalAnnotated = (
-          annotationsCount[0] as { count: number }
-        ).count;
+        const totalAnnotated = (annotationsCount[0] as { count: number }).count;
 
         await ctx.db
           .update(userVideoProgress)
           .set({
             lastAnnotatedFrame: Math.max(
               currentProgress.lastAnnotatedFrame,
-              input.frameNumber
+              input.frameNumber,
             ),
             totalAnnotated,
             lastActivity: new Date(),
@@ -280,8 +284,8 @@ export const annotationRouter = createTRPCRouter({
           .where(
             and(
               eq(userVideoProgress.userId, userId),
-              eq(userVideoProgress.videoId, input.videoId)
-            )
+              eq(userVideoProgress.videoId, input.videoId),
+            ),
           );
       }
 
@@ -301,9 +305,9 @@ export const annotationRouter = createTRPCRouter({
             x: z.number().min(0).max(1).optional(),
             y: z.number().min(0).max(1).optional(),
             ballVisible: z.boolean(),
-          })
+          }),
         ),
-      })
+      }),
     )
     .mutation(async ({ ctx, input }) => {
       const userId = ctx.session.user.id;
@@ -312,7 +316,7 @@ export const annotationRouter = createTRPCRouter({
       for (const ann of input.annotations) {
         if (ann.ballVisible && (ann.x === undefined || ann.y === undefined)) {
           throw new Error(
-            `Frame ${ann.frameNumber}: x and y required when ball is visible`
+            `Frame ${ann.frameNumber}: x and y required when ball is visible`,
           );
         }
       }
@@ -348,7 +352,7 @@ export const annotationRouter = createTRPCRouter({
       const currentProgress = await ctx.db.query.userVideoProgress.findFirst({
         where: and(
           eq(userVideoProgress.userId, userId),
-          eq(userVideoProgress.videoId, input.videoId)
+          eq(userVideoProgress.videoId, input.videoId),
         ),
       });
 
@@ -364,7 +368,7 @@ export const annotationRouter = createTRPCRouter({
 
         const maxFrame = Math.max(
           ...input.annotations.map((a) => a.frameNumber),
-          currentProgress.lastAnnotatedFrame
+          currentProgress.lastAnnotatedFrame,
         );
 
         await ctx.db
@@ -377,8 +381,8 @@ export const annotationRouter = createTRPCRouter({
           .where(
             and(
               eq(userVideoProgress.userId, userId),
-              eq(userVideoProgress.videoId, input.videoId)
-            )
+              eq(userVideoProgress.videoId, input.videoId),
+            ),
           );
       }
 
@@ -393,7 +397,7 @@ export const annotationRouter = createTRPCRouter({
       z.object({
         videoId: z.string().uuid(),
         frameNumber: z.number(),
-      })
+      }),
     )
     .query(async ({ ctx, input }) => {
       const userId = ctx.session.user.id;
@@ -412,7 +416,7 @@ export const annotationRouter = createTRPCRouter({
         where: and(
           eq(annotations.videoId, input.videoId),
           eq(annotations.userId, userId),
-          eq(annotations.frameNumber, input.frameNumber)
+          eq(annotations.frameNumber, input.frameNumber),
         ),
       });
 
@@ -421,7 +425,7 @@ export const annotationRouter = createTRPCRouter({
         where: and(
           eq(annotations.videoId, input.videoId),
           eq(annotations.userId, userId),
-          eq(annotations.ballVisible, true)
+          eq(annotations.ballVisible, true),
         ),
         orderBy: [desc(annotations.frameNumber)],
         limit: 5,
@@ -432,7 +436,7 @@ export const annotationRouter = createTRPCRouter({
         },
       });
 
-      const imageUrl = getFrameUrl(video.cloudinaryFolder, input.frameNumber);
+      const imageUrl = buildFrameImageUrl(video, input.frameNumber);
 
       return {
         frameNumber: input.frameNumber,
@@ -463,7 +467,7 @@ export const annotationRouter = createTRPCRouter({
       const progress = await ctx.db.query.userVideoProgress.findFirst({
         where: and(
           eq(userVideoProgress.userId, userId),
-          eq(userVideoProgress.videoId, input.videoId)
+          eq(userVideoProgress.videoId, input.videoId),
         ),
         with: {
           video: true,
@@ -476,7 +480,7 @@ export const annotationRouter = createTRPCRouter({
           where: eq(videos.id, input.videoId),
         });
         return {
-          currentFrame: -1,
+          currentFrame: 0,
           totalFrames: video?.totalFrames ?? 0,
           annotated: 0,
           percentComplete: 0,
@@ -485,7 +489,7 @@ export const annotationRouter = createTRPCRouter({
       }
 
       const sessionDuration = Math.floor(
-        (Date.now() - progress.startedAt.getTime()) / 1000
+        (Date.now() - progress.startedAt.getTime()) / 1000,
       );
 
       return {
@@ -509,7 +513,7 @@ export const annotationRouter = createTRPCRouter({
       const allAnnotations = await ctx.db.query.annotations.findMany({
         where: and(
           eq(annotations.videoId, input.videoId),
-          eq(annotations.userId, userId)
+          eq(annotations.userId, userId),
         ),
         columns: {
           frameNumber: true,

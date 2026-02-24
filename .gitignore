@@ -48,6 +48,24 @@ yarn-error.log*
 # temp files
 temp/
 
+# video/media files (large binaries)
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.png
+*.jpg
+*.jpeg
 videos/
-
 frames_reims_amiens_10s/
+
+# test/track data
+Test/
+TrackData/
+
+# shell scripts (generated splitters)
+split_*.sh
+
+# lambda node_modules (built separately)
+lambda/*/node_modules/
+lambda/*/package-lock.json

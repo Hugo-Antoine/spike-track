@@ -5,12 +5,14 @@ import { Alert, AlertDescription } from "~/components/ui/alert";
 import { AlertCircle } from "lucide-react";
 import { MagnifyingGlass } from "./MagnifyingGlass";
 import { ImageSequenceViewer } from "./ImageSequenceViewer";
-import { getFrameUrlClient } from "~/lib/cloudinary";
+import { getFrameUrl } from "~/lib/frame-url";
 
 interface AnnotationCanvasProps {
   imageUrl: string;
   frameNumber: number;
-  cloudinaryFolder: string;
+  s3FramesPrefix: string | null;
+  cloudinaryPublicId?: string | null;
+  fps: number;
   totalFrames: number;
   previousAnnotations: Array<{ frameNumber: number; x: number; y: number }>;
   currentAnnotation: { x: number; y: number; ballVisible: boolean } | null;
@@ -21,7 +23,9 @@ interface AnnotationCanvasProps {
 export function AnnotationCanvas({
   imageUrl: _imageUrl,
   frameNumber,
-  cloudinaryFolder,
+  s3FramesPrefix,
+  cloudinaryPublicId,
+  fps,
   totalFrames,
   previousAnnotations: _previousAnnotations,
   currentAnnotation,
@@ -29,7 +33,9 @@ export function AnnotationCanvas({
   isAnnotated: _isAnnotated,
 }: AnnotationCanvasProps) {
   const [hasError, setHasError] = useState(false);
-  const [mousePos, setMousePos] = useState<{ x: number; y: number } | null>(null);
+  const [mousePos, setMousePos] = useState<{ x: number; y: number } | null>(
+    null,
+  );
   const [zoom, setZoom] = useState(2);
   const [, forceUpdate] = useState(0);
   const activeImageRef = useRef<HTMLImageElement | null>(null);
@@ -41,13 +47,11 @@ export function AnnotationCanvas({
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
 
-    // Convert to relative coordinates (0-1)
     const relativeX = x / rect.width;
     const relativeY = y / rect.height;
 
-    // Validate coordinates are within bounds
     if (relativeX < 0 || relativeX > 1 || relativeY < 0 || relativeY > 1) {
-      return; // Ignore clicks outside image
+      return;
     }
 
     onAnnotate(relativeX, relativeY);
@@ -72,13 +76,18 @@ export function AnnotationCanvas({
     setZoom((prev) => Math.min(Math.max(prev - e.deltaY * 0.01, 1.5), 10));
   };
 
+  // Build magnifying glass image URL
+  const magnifyUrl = s3FramesPrefix
+    ? getFrameUrl(s3FramesPrefix, frameNumber)
+    : _imageUrl;
+
   if (hasError) {
     return (
       <div className="flex h-full items-center justify-center p-4">
         <Alert variant="destructive" className="max-w-md">
           <AlertCircle className="h-4 w-4" />
           <AlertDescription>
-            Erreur lors du chargement de l'image. Veuillez réessayer.
+            Erreur lors du chargement de l&apos;image. Veuillez réessayer.
           </AlertDescription>
         </Alert>
       </div>
@@ -87,7 +96,9 @@ export function AnnotationCanvas({
 
   return (
     <ImageSequenceViewer
-      cloudinaryFolder={cloudinaryFolder}
+      s3FramesPrefix={s3FramesPrefix}
+      cloudinaryPublicId={cloudinaryPublicId}
+      fps={fps}
       totalFrames={totalFrames}
       currentFrame={frameNumber}
       bufferBefore={5}
@@ -103,28 +114,36 @@ export function AnnotationCanvas({
           setHasError(true);
         }
       }}
-      className="flex h-full cursor-none items-center justify-center overflow-hidden bg-muted/30 p-4"
+      className="bg-muted/30 flex h-full cursor-none items-center justify-center overflow-hidden p-4"
     >
       {/* SVG Overlay for current annotation */}
-      {activeImageRef.current && currentAnnotation && currentAnnotation.ballVisible && (
-        <svg
-          className="pointer-events-none absolute left-0 top-0 h-full w-full"
-          style={{ zIndex: 10 }}
-        >
-          <circle
-            cx={currentAnnotation.x * activeImageRef.current.getBoundingClientRect().width}
-            cy={currentAnnotation.y * activeImageRef.current.getBoundingClientRect().height}
-            r={4}
-            fill="red"
-            opacity={0.9}
-          />
-        </svg>
-      )}
+      {activeImageRef.current &&
+        currentAnnotation &&
+        currentAnnotation.ballVisible && (
+          <svg
+            className="pointer-events-none absolute top-0 left-0 h-full w-full"
+            style={{ zIndex: 10 }}
+          >
+            <circle
+              cx={
+                currentAnnotation.x *
+                activeImageRef.current.getBoundingClientRect().width
+              }
+              cy={
+                currentAnnotation.y *
+                activeImageRef.current.getBoundingClientRect().height
+              }
+              r={4}
+              fill="red"
+              opacity={0.9}
+            />
+          </svg>
+        )}
 
       {/* Magnifying glass */}
       {mousePos && activeImageRef.current && (
         <MagnifyingGlass
-          imageUrl={getFrameUrlClient(cloudinaryFolder, frameNumber)}
+          imageUrl={magnifyUrl}
           mouseX={mousePos.x}
           mouseY={mousePos.y}
           imageElement={activeImageRef.current}

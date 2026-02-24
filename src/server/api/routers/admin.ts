@@ -3,7 +3,7 @@ import { eq } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 
 import { createTRPCRouter, protectedProcedure } from "~/server/api/trpc";
-import { user } from "~/server/db/schema";
+import { user, queueConfig } from "~/server/db/schema";
 
 /**
  * Admin router - protected by role check
@@ -44,7 +44,7 @@ export const adminRouter = createTRPCRouter({
       z.object({
         userId: z.string(),
         role: z.enum(["USER", "ANNOTATOR"]), // Cannot set ADMIN from interface
-      })
+      }),
     )
     .mutation(async ({ ctx, input }) => {
       // Check if user is admin
@@ -67,6 +67,61 @@ export const adminRouter = createTRPCRouter({
         .update(user)
         .set({ role: input.role })
         .where(eq(user.id, input.userId));
+
+      return { success: true };
+    }),
+
+  getQueueConfig: protectedProcedure.query(async ({ ctx }) => {
+    if (ctx.session.user.role !== "ADMIN") {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: "Admin access required",
+      });
+    }
+
+    let config = await ctx.db.query.queueConfig.findFirst();
+
+    if (!config) {
+      const [inserted] = await ctx.db
+        .insert(queueConfig)
+        .values({ reannotationPercentage: 30 })
+        .returning();
+      config = inserted!;
+    }
+
+    return { reannotationPercentage: config.reannotationPercentage };
+  }),
+
+  updateQueueConfig: protectedProcedure
+    .input(
+      z.object({
+        reannotationPercentage: z.number().int().min(0).max(100),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      if (ctx.session.user.role !== "ADMIN") {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "Admin access required",
+        });
+      }
+
+      const config = await ctx.db.query.queueConfig.findFirst();
+
+      if (!config) {
+        await ctx.db.insert(queueConfig).values({
+          reannotationPercentage: input.reannotationPercentage,
+          updatedBy: ctx.session.user.id,
+        });
+      } else {
+        await ctx.db
+          .update(queueConfig)
+          .set({
+            reannotationPercentage: input.reannotationPercentage,
+            updatedBy: ctx.session.user.id,
+          })
+          .where(eq(queueConfig.id, config.id));
+      }
 
       return { success: true };
     }),

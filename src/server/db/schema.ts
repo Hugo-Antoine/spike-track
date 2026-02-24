@@ -2,14 +2,12 @@ import { relations } from "drizzle-orm";
 import {
   boolean,
   index,
-  integer,
   pgTable,
   pgTableCreator,
   real,
   text,
   timestamp,
   unique,
-  uuid,
 } from "drizzle-orm/pg-core";
 
 export const createTable = pgTableCreator((name) => `pg-drizzle_${name}`);
@@ -32,7 +30,7 @@ export const posts = createTable(
   (t) => [
     index("created_by_idx").on(t.createdById),
     index("name_idx").on(t.name),
-  ]
+  ],
 );
 
 export const user = pgTable("user", {
@@ -43,7 +41,10 @@ export const user = pgTable("user", {
     .$defaultFn(() => false)
     .notNull(),
   image: text("image"),
-  role: text("role").$type<"USER" | "ANNOTATOR" | "ADMIN">().notNull().default("USER"),
+  role: text("role")
+    .$type<"USER" | "ANNOTATOR" | "ADMIN">()
+    .notNull()
+    .default("USER"),
   createdAt: timestamp("created_at")
     .$defaultFn(() => /* @__PURE__ */ new Date())
     .notNull(),
@@ -89,24 +90,55 @@ export const verification = pgTable("verification", {
   value: text("value").notNull(),
   expiresAt: timestamp("expires_at").notNull(),
   createdAt: timestamp("created_at").$defaultFn(
-    () => /* @__PURE__ */ new Date()
+    () => /* @__PURE__ */ new Date(),
   ),
   updatedAt: timestamp("updated_at").$defaultFn(
-    () => /* @__PURE__ */ new Date()
+    () => /* @__PURE__ */ new Date(),
   ),
 });
 
-// Volleyball annotation tables
+// Source videos (uploaded by admin)
+export const sourceVideos = createTable(
+  "source_video",
+  (d) => ({
+    id: d
+      .uuid()
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    name: d.varchar({ length: 255 }).notNull(),
+    s3Key: d.varchar({ length: 512 }).notNull(),
+    fps: real("fps"),
+    width: d.integer(),
+    height: d.integer(),
+    durationSeconds: real("duration_seconds"),
+    createdAt: d
+      .timestamp({ withTimezone: true })
+      .$defaultFn(() => new Date())
+      .notNull(),
+  }),
+  (t) => [index("source_video_created_at_idx").on(t.createdAt)],
+);
+
+// Volleyball annotation tables — segments extracted from source videos
 export const videos = createTable(
   "video",
   (d) => ({
-    id: d.uuid().primaryKey().$defaultFn(() => crypto.randomUUID()),
+    id: d
+      .uuid()
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    sourceVideoId: d.uuid().references(() => sourceVideos.id, {
+      onDelete: "set null",
+    }),
     name: d.varchar({ length: 255 }).notNull(),
-    cloudinaryFolder: d.varchar({ length: 512 }).notNull(),
+    cloudinaryPublicId: d.varchar({ length: 512 }),
+    s3FramesPrefix: d.varchar({ length: 512 }),
+    startTimeSeconds: real("start_time_seconds"),
     totalFrames: d.integer().notNull(),
     fps: d.integer().notNull().default(30),
     width: d.integer().notNull(),
     height: d.integer().notNull(),
+    status: d.varchar({ length: 50 }).notNull().default("ready"),
     createdAt: d
       .timestamp({ withTimezone: true })
       .$defaultFn(() => new Date())
@@ -116,13 +148,17 @@ export const videos = createTable(
   (t) => [
     index("video_name_idx").on(t.name),
     index("video_created_at_idx").on(t.createdAt),
-  ]
+    index("video_source_idx").on(t.sourceVideoId),
+  ],
 );
 
 export const annotations = createTable(
   "annotation",
   (d) => ({
-    id: d.uuid().primaryKey().$defaultFn(() => crypto.randomUUID()),
+    id: d
+      .uuid()
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
     videoId: d
       .uuid()
       .notNull()
@@ -145,19 +181,22 @@ export const annotations = createTable(
     unique("annotation_video_user_frame_unique").on(
       t.videoId,
       t.userId,
-      t.frameNumber
+      t.frameNumber,
     ),
     index("annotation_video_frame_idx").on(t.videoId, t.frameNumber),
     index("annotation_user_video_idx").on(t.userId, t.videoId),
     index("annotation_video_idx").on(t.videoId),
     index("annotation_user_idx").on(t.userId),
-  ]
+  ],
 );
 
 export const userVideoProgress = createTable(
   "user_video_progress",
   (d) => ({
-    id: d.uuid().primaryKey().$defaultFn(() => crypto.randomUUID()),
+    id: d
+      .uuid()
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
     userId: d
       .text()
       .notNull()
@@ -166,7 +205,7 @@ export const userVideoProgress = createTable(
       .uuid()
       .notNull()
       .references(() => videos.id, { onDelete: "cascade" }),
-    lastAnnotatedFrame: d.integer().notNull().default(-1),
+    lastAnnotatedFrame: d.integer().notNull().default(0),
     totalAnnotated: d.integer().notNull().default(0),
     status: d.varchar({ length: 50 }).notNull().default("in_progress"),
     startedAt: d
@@ -185,8 +224,25 @@ export const userVideoProgress = createTable(
     index("user_video_progress_video_idx").on(t.videoId),
     index("user_video_progress_status_idx").on(t.status),
     index("idx_user_role").on(t.userId), // For role filtering
-  ]
+  ],
 );
+
+export const queueConfig = createTable("queue_config", (d) => ({
+  id: d
+    .uuid()
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  reannotationPercentage: d.integer().notNull().default(30),
+  updatedAt: d.timestamp({ withTimezone: true }).$onUpdate(() => new Date()),
+  updatedBy: d.text().references(() => user.id, { onDelete: "set null" }),
+}));
+
+export const queueConfigRelations = relations(queueConfig, ({ one }) => ({
+  updatedByUser: one(user, {
+    fields: [queueConfig.updatedBy],
+    references: [user.id],
+  }),
+}));
 
 export const userRelations = relations(user, ({ many }) => ({
   account: many(account),
@@ -203,7 +259,15 @@ export const sessionRelations = relations(session, ({ one }) => ({
   user: one(user, { fields: [session.userId], references: [user.id] }),
 }));
 
-export const videosRelations = relations(videos, ({ many }) => ({
+export const sourceVideosRelations = relations(sourceVideos, ({ many }) => ({
+  segments: many(videos),
+}));
+
+export const videosRelations = relations(videos, ({ one, many }) => ({
+  sourceVideo: one(sourceVideos, {
+    fields: [videos.sourceVideoId],
+    references: [sourceVideos.id],
+  }),
   annotations: many(annotations),
   userProgress: many(userVideoProgress),
 }));
@@ -230,5 +294,5 @@ export const userVideoProgressRelations = relations(
       fields: [userVideoProgress.videoId],
       references: [videos.id],
     }),
-  })
+  }),
 );

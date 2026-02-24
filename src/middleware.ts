@@ -3,15 +3,23 @@ import type { NextRequest } from "next/server";
 import { auth } from "~/server/better-auth";
 
 // Force Node.js runtime for Better Auth compatibility
-export const runtime = 'nodejs';
+export const runtime = "nodejs";
 
 export async function middleware(request: NextRequest) {
   const path = request.nextUrl.pathname;
 
   // Get session once
-  const session = await auth.api.getSession({
+  const rawSession = await auth.api.getSession({
     headers: request.headers,
   });
+  const session = rawSession
+    ? {
+        ...rawSession,
+        user: rawSession.user as typeof rawSession.user & {
+          role: "USER" | "ANNOTATOR" | "ADMIN";
+        },
+      }
+    : null;
 
   // Routes publiques (auth)
   if (path.startsWith("/login") || path.startsWith("/register")) {
@@ -75,7 +83,5 @@ export async function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: [
-    "/((?!api|_next/static|_next/image|favicon.ico).*)",
-  ],
+  matcher: ["/((?!api|_next/static|_next/image|favicon.ico).*)"],
 };

@@ -1,11 +1,12 @@
 "use client";
 
-import { useState } from "react";
 import { useImageBuffer } from "~/hooks/use-image-buffer";
 import { cn } from "~/lib/utils";
 
 interface ImageSequenceViewerProps {
-  cloudinaryFolder: string;
+  s3FramesPrefix: string | null;
+  cloudinaryPublicId?: string | null;
+  fps: number;
   totalFrames: number;
   currentFrame: number;
   bufferBefore?: number;
@@ -22,7 +23,9 @@ interface ImageSequenceViewerProps {
 }
 
 export function ImageSequenceViewer({
-  cloudinaryFolder,
+  s3FramesPrefix,
+  cloudinaryPublicId,
+  fps,
   totalFrames,
   currentFrame,
   bufferBefore = 30,
@@ -37,10 +40,10 @@ export function ImageSequenceViewer({
   children,
   className,
 }: ImageSequenceViewerProps) {
-  const [loadedFrame, setLoadedFrame] = useState<number | null>(null);
-
   const { images } = useImageBuffer({
-    cloudinaryFolder,
+    s3FramesPrefix,
+    cloudinaryPublicId,
+    fps,
     totalFrames,
     currentFrame,
     bufferBefore,
@@ -72,19 +75,14 @@ export function ImageSequenceViewer({
               draggable={false}
               onLoad={() => {
                 if (isActive) {
-                  setLoadedFrame(frame);
                   onFrameLoad?.(frame);
                 }
               }}
               style={{
-                // Active image is relative to set container dimensions
-                // Others are absolute and stacked underneath
                 position: isActive ? "relative" : "absolute",
                 top: 0,
                 left: 0,
-                // Use opacity instead of display to keep images in render tree
                 opacity: isActive ? 1 : 0,
-                // Prevent interaction with hidden images
                 pointerEvents: isActive ? "auto" : "none",
               }}
             />

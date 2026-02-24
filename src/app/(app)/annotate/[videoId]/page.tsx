@@ -22,7 +22,7 @@ import { PartyPopper } from "lucide-react";
 import { useToast } from "~/hooks/use-toast";
 import { useAnnotationBuffer } from "~/hooks/use-annotation-buffer";
 import { useAnnotationData } from "~/hooks/use-annotation-data";
-import { getFrameUrlClient } from "~/lib/cloudinary";
+import { getFrameUrl } from "~/lib/frame-url";
 
 export default function AnnotatePage({
   params,
@@ -34,10 +34,20 @@ export default function AnnotatePage({
   const router = useRouter();
   const { toast } = useToast();
 
-  const [currentFrame, setCurrentFrame] = useState(0);
+  const [currentFrame, setCurrentFrame] = useState(1);
   const [isCompleted, setIsCompleted] = useState(false);
   const [showNavigationWarning, setShowNavigationWarning] = useState(false);
-  const [pendingNavigation, setPendingNavigation] = useState<string | null>(null);
+  const [pendingNavigation, setPendingNavigation] = useState<string | null>(
+    null,
+  );
+
+  // Guard: redirect if user has a different in_progress video
+  const { data: progressData } = api.annotation.getMyProgress.useQuery();
+  useEffect(() => {
+    if (progressData?.current && progressData.current.videoId !== videoId) {
+      router.replace(`/annotate/${progressData.current.videoId}`);
+    }
+  }, [progressData, videoId, router]);
 
   // Annotation buffer
   const { addToBuffer, manualSave, pendingCount, isSaving, countdown } =
@@ -54,7 +64,7 @@ export default function AnnotatePage({
   // Queries — all fire in parallel (no `enabled` gating)
   const { data: video } = api.video.getById.useQuery(
     { id: videoId },
-    { staleTime: Infinity }
+    { staleTime: Infinity },
   );
 
   const { data: stats } = api.annotation.getStats.useQuery({ videoId });
@@ -74,16 +84,6 @@ export default function AnnotatePage({
       setIsCompleted(true);
     }
   }, [nextUnannotated]);
-
-  // Navigation avec buffer check
-  const navigateTo = (path: string) => {
-    if (pendingCount > 0) {
-      setPendingNavigation(path);
-      setShowNavigationWarning(true);
-    } else {
-      router.push(path);
-    }
-  };
 
   const handleSaveAndNavigate = async () => {
     await manualSave();
@@ -154,11 +154,9 @@ export default function AnnotatePage({
       ballVisible: true,
     });
 
-    // Optimistic update in local cache
     setLocalAnnotation(currentFrame, { x, y, ballVisible: true });
 
-    // Navigate to next frame
-    if (video && currentFrame < video.totalFrames - 1) {
+    if (video && currentFrame < video.totalFrames) {
       setCurrentFrame(currentFrame + 1);
     }
   };
@@ -169,29 +167,27 @@ export default function AnnotatePage({
       ballVisible: false,
     });
 
-    // Optimistic update in local cache
     setLocalAnnotation(currentFrame, { x: null, y: null, ballVisible: false });
 
-    // Navigate to next frame
-    if (video && currentFrame < video.totalFrames - 1) {
+    if (video && currentFrame < video.totalFrames) {
       setCurrentFrame(currentFrame + 1);
     }
   };
 
   const handlePrevFrame = () => {
-    if (currentFrame > 0) {
+    if (currentFrame > 1) {
       setCurrentFrame(currentFrame - 1);
     }
   };
 
   const handleNextFrame = () => {
-    if (video && currentFrame < video.totalFrames - 1) {
+    if (video && currentFrame < video.totalFrames) {
       setCurrentFrame(currentFrame + 1);
     }
   };
 
   const handleGoToFirst = () => {
-    setCurrentFrame(0);
+    setCurrentFrame(1);
   };
 
   const handleGoToNextUnannotated = () => {
@@ -201,7 +197,6 @@ export default function AnnotatePage({
   };
 
   const handleMarkCompleted = async () => {
-    // TODO: Implement mark as completed mutation
     toast({
       title: "Vidéo marquée comme terminée",
       description: "Vous pouvez retourner au dashboard",
@@ -222,12 +217,14 @@ export default function AnnotatePage({
   if (isCompleted) {
     return (
       <div className="flex min-h-screen items-center justify-center">
-        <Card className="p-12 text-center max-w-md">
+        <Card className="max-w-md p-12 text-center">
           <PartyPopper className="mx-auto mb-6 h-16 w-16 text-green-500" />
-          <h1 className="mb-4 text-3xl font-bold">Toutes les frames annotées !</h1>
-          <p className="mb-8 text-muted-foreground">
-            Vous avez annoté toutes les frames de cette vidéo. Vous pouvez vérifier
-            votre travail ou marquer la vidéo comme terminée.
+          <h1 className="mb-4 text-3xl font-bold">
+            Toutes les frames annotées !
+          </h1>
+          <p className="text-muted-foreground mb-8">
+            Vous avez annoté toutes les frames de cette vidéo. Vous pouvez
+            vérifier votre travail ou marquer la vidéo comme terminée.
           </p>
           <div className="flex flex-col gap-2">
             <Button size="lg" onClick={handleMarkCompleted} className="w-full">
@@ -247,12 +244,14 @@ export default function AnnotatePage({
     );
   }
 
-  // Image URL generated client-side (no server needed)
-  const imageUrl = getFrameUrlClient(video.cloudinaryFolder, currentFrame);
+  // Build image URL for the current frame
+  const imageUrl = video.s3FramesPrefix
+    ? getFrameUrl(video.s3FramesPrefix, currentFrame)
+    : "";
 
   return (
     <>
-      <div className="flex h-[calc(100dvh-2.5rem)] flex-col bg-background">
+      <div className="bg-background flex h-[calc(100dvh-2.5rem)] flex-col">
         {/* Stats Header */}
         <AnnotationStats
           videoName={video.name}
@@ -271,16 +270,20 @@ export default function AnnotatePage({
           <AnnotationCanvas
             imageUrl={imageUrl}
             frameNumber={currentFrame}
-            cloudinaryFolder={video.cloudinaryFolder}
+            s3FramesPrefix={video.s3FramesPrefix}
+            cloudinaryPublicId={video.cloudinaryPublicId}
+            fps={video.fps}
             totalFrames={video.totalFrames}
             previousAnnotations={previousAnnotations}
             currentAnnotation={
-              currentAnnotation && currentAnnotation.x !== null && currentAnnotation.y !== null
-                ? {
-                    x: currentAnnotation.x,
-                    y: currentAnnotation.y,
-                    ballVisible: currentAnnotation.ballVisible,
-                  }
+              currentAnnotation?.x !== null && currentAnnotation?.y !== null
+                ? currentAnnotation
+                  ? {
+                      x: currentAnnotation.x,
+                      y: currentAnnotation.y,
+                      ballVisible: currentAnnotation.ballVisible,
+                    }
+                  : null
                 : null
             }
             onAnnotate={handleAnnotate}
@@ -300,12 +303,16 @@ export default function AnnotatePage({
       </div>
 
       {/* Navigation Warning Dialog */}
-      <AlertDialog open={showNavigationWarning} onOpenChange={setShowNavigationWarning}>
+      <AlertDialog
+        open={showNavigationWarning}
+        onOpenChange={setShowNavigationWarning}
+      >
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Annotations non sauvegardées</AlertDialogTitle>
             <AlertDialogDescription>
-              Vous avez {pendingCount} annotation(s) en attente. Voulez-vous les sauvegarder ?
+              Vous avez {pendingCount} annotation(s) en attente. Voulez-vous les
+              sauvegarder ?
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

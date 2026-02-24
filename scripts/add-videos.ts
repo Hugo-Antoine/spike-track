@@ -24,7 +24,7 @@ const db = drizzle(sql, { schema });
 const videosToAdd = [
   {
     name: "Match Reims vs Amiens - Extrait 10s",
-    cloudinaryFolder: "reims-amiens-10s",
+    cloudinaryPublicId: "reims-amiens-10s",
     totalFrames: 300,
     fps: 30,
     width: 1280,
@@ -42,9 +42,9 @@ async function addVideos() {
         .values(video)
         .returning();
 
-      console.log(`✅ Vidéo ajoutée : ${inserted.name} (ID: ${inserted.id})`);
-      console.log(`   📁 Dossier: ${inserted.cloudinaryFolder}`);
-      console.log(`   🎞️  Frames: ${inserted.totalFrames}`);
+      console.log(`✅ Vidéo ajoutée : ${inserted!.name} (ID: ${inserted!.id})`);
+      console.log(`   📁 Public ID: ${inserted!.cloudinaryPublicId}`);
+      console.log(`   🎞️  Frames: ${inserted!.totalFrames}`);
       console.log();
     }
 

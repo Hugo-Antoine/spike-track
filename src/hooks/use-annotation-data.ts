@@ -13,7 +13,7 @@ export function useAnnotationData(videoId: string) {
   const { data: annotationMap, isLoading } =
     api.annotation.getAllAnnotations.useQuery(
       { videoId },
-      { staleTime: Infinity }
+      { staleTime: Infinity },
     );
 
   const getFrameAnnotation = useCallback(
@@ -21,13 +21,13 @@ export function useAnnotationData(videoId: string) {
       if (!annotationMap) return null;
       return annotationMap[frameNumber] ?? null;
     },
-    [annotationMap]
+    [annotationMap],
   );
 
   const getPreviousVisible = useCallback(
     (
       frameNumber: number,
-      limit: number = 5
+      limit = 5,
     ): Array<{ frameNumber: number; x: number; y: number }> => {
       if (!annotationMap) return [];
 
@@ -42,7 +42,7 @@ export function useAnnotationData(videoId: string) {
       result.sort((a, b) => b.frameNumber - a.frameNumber);
       return result.slice(0, limit);
     },
-    [annotationMap]
+    [annotationMap],
   );
 
   const setLocalAnnotation = useCallback(
@@ -52,7 +52,7 @@ export function useAnnotationData(videoId: string) {
         return { ...old, [frameNumber]: annotation };
       });
     },
-    [utils, videoId]
+    [utils, videoId],
   );
 
   return {

@@ -1,4 +1,12 @@
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "~/components/ui/card";
+"use client";
+
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "~/components/ui/card";
 import { Button } from "~/components/ui/button";
 import { Clock, Mail } from "lucide-react";
 import { authClient } from "~/server/better-auth/client";
@@ -13,22 +21,23 @@ export default function WaitingPage() {
           </div>
           <CardTitle className="text-2xl">Accès en attente</CardTitle>
           <CardDescription>
-            Votre compte est en cours de validation par l'administrateur
+            Votre compte est en cours de validation par l&apos;administrateur
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-6">
-          <div className="rounded-lg border border-border bg-muted/50 p-4">
-            <p className="text-sm text-muted-foreground">
-              Vous recevrez l'accès à l'application dès que votre profil sera approuvé.
+          <div className="border-border bg-muted/50 rounded-lg border p-4">
+            <p className="text-muted-foreground text-sm">
+              Vous recevrez l&apos;accès à l&apos;application dès que votre
+              profil sera approuvé.
             </p>
           </div>
 
-          <div className="flex items-start gap-3 rounded-lg border border-border p-4">
-            <Mail className="mt-0.5 h-5 w-5 text-muted-foreground" />
+          <div className="border-border flex items-start gap-3 rounded-lg border p-4">
+            <Mail className="text-muted-foreground mt-0.5 h-5 w-5" />
             <div>
-              <p className="text-sm font-medium">Besoin d'aide ?</p>
-              <p className="text-sm text-muted-foreground">
-                Contactez l'administrateur :{" "}
+              <p className="text-sm font-medium">Besoin d&apos;aide ?</p>
+              <p className="text-muted-foreground text-sm">
+                Contactez l&apos;administrateur :{" "}
                 <a
                   href="mailto:hugoantoinee@gmail.com"
                   className="text-primary underline-offset-4 hover:underline"

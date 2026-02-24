@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { getFrameUrlClient } from "~/lib/cloudinary";
+import { getFrameUrl } from "~/lib/frame-url";
 
 interface BufferedImage {
   frameNumber: number;
@@ -8,7 +8,10 @@ interface BufferedImage {
 }
 
 interface UseImageBufferOptions {
-  cloudinaryFolder: string;
+  s3FramesPrefix: string | null;
+  /** @deprecated Legacy Cloudinary support */
+  cloudinaryPublicId?: string | null;
+  fps: number;
   totalFrames: number;
   currentFrame: number;
   bufferBefore?: number;
@@ -24,8 +27,31 @@ interface UseImageBufferReturn {
   isCurrentReady: boolean;
 }
 
+function buildUrl(
+  s3FramesPrefix: string | null,
+  cloudinaryPublicId: string | null | undefined,
+  fps: number,
+  frameNumber: number,
+): string {
+  if (s3FramesPrefix) {
+    return getFrameUrl(s3FramesPrefix, frameNumber);
+  }
+  // Legacy Cloudinary fallback
+  if (cloudinaryPublicId) {
+    const seconds = ((frameNumber - 1) / fps).toFixed(3);
+    const cloudName =
+      typeof window !== "undefined"
+        ? (process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME ?? "")
+        : "";
+    return `https://res.cloudinary.com/${cloudName}/video/upload/so_${seconds},w_1280,c_limit,q_auto,f_auto/${cloudinaryPublicId}.jpg`;
+  }
+  return "";
+}
+
 export function useImageBuffer({
-  cloudinaryFolder,
+  s3FramesPrefix,
+  cloudinaryPublicId,
+  fps,
   totalFrames,
   currentFrame,
   bufferBefore = 30,
@@ -36,7 +62,6 @@ export function useImageBuffer({
   const [images, setImages] = useState<Map<number, BufferedImage>>(new Map());
   const loadingRef = useRef<Set<number>>(new Set());
 
-  // Use refs for callbacks to avoid recreating preloadImage on every render
   const onFrameReadyRef = useRef(onFrameReady);
   const onFrameErrorRef = useRef(onFrameError);
   useEffect(() => {
@@ -44,19 +69,21 @@ export function useImageBuffer({
     onFrameErrorRef.current = onFrameError;
   }, [onFrameReady, onFrameError]);
 
-  // Calculate window boundaries
-  const windowStart = Math.max(0, currentFrame - bufferBefore);
-  const windowEnd = Math.min(totalFrames - 1, currentFrame + bufferAfter);
+  const windowStart = Math.max(1, currentFrame - bufferBefore);
+  const windowEnd = Math.min(totalFrames, currentFrame + bufferAfter);
 
-  // Preload a single image
   const preloadImage = useCallback(
     (frameNumber: number) => {
-      // Skip if already loading or loaded
       if (loadingRef.current.has(frameNumber)) return;
 
-      const url = getFrameUrlClient(cloudinaryFolder, frameNumber);
+      const url = buildUrl(
+        s3FramesPrefix,
+        cloudinaryPublicId,
+        fps,
+        frameNumber,
+      );
+      if (!url) return;
 
-      // Mark as loading
       loadingRef.current.add(frameNumber);
       setImages((prev) => {
         const newMap = new Map(prev);
@@ -64,7 +91,6 @@ export function useImageBuffer({
         return newMap;
       });
 
-      // Create image element and decode
       const img = new Image();
       img.src = url;
 
@@ -89,19 +115,19 @@ export function useImageBuffer({
           onFrameErrorRef.current?.(frameNumber);
         });
     },
-    [cloudinaryFolder]
+    [s3FramesPrefix, cloudinaryPublicId, fps],
   );
 
-  // Effect to manage buffer when currentFrame changes
   useEffect(() => {
-    // Preload images in window, prioritizing current frame and nearby frames
     const framesToLoad: number[] = [];
 
-    // Current frame first
     framesToLoad.push(currentFrame);
 
-    // Then expand outward from current frame
-    for (let offset = 1; offset <= Math.max(bufferBefore, bufferAfter); offset++) {
+    for (
+      let offset = 1;
+      offset <= Math.max(bufferBefore, bufferAfter);
+      offset++
+    ) {
       if (currentFrame + offset <= windowEnd) {
         framesToLoad.push(currentFrame + offset);
       }
@@ -110,37 +136,44 @@ export function useImageBuffer({
       }
     }
 
-    // Start loading
     for (const frame of framesToLoad) {
       preloadImage(frame);
     }
 
-    // Clean up images outside the window (but never remove current frame)
     setImages((prev) => {
-      // First check if there's anything to clean up
       let hasFramesToRemove = false;
       for (const [frame] of prev) {
-        if (frame !== currentFrame && (frame < windowStart || frame > windowEnd)) {
+        if (
+          frame !== currentFrame &&
+          (frame < windowStart || frame > windowEnd)
+        ) {
           hasFramesToRemove = true;
           break;
         }
       }
 
-      // Only create a new Map if we actually need to remove something
-      if (!hasFramesToRemove) {
-        return prev;
-      }
+      if (!hasFramesToRemove) return prev;
 
       const newMap = new Map(prev);
       for (const [frame] of prev) {
-        if (frame !== currentFrame && (frame < windowStart || frame > windowEnd)) {
+        if (
+          frame !== currentFrame &&
+          (frame < windowStart || frame > windowEnd)
+        ) {
           newMap.delete(frame);
           loadingRef.current.delete(frame);
         }
       }
       return newMap;
     });
-  }, [currentFrame, windowStart, windowEnd, bufferBefore, bufferAfter, preloadImage]);
+  }, [
+    currentFrame,
+    windowStart,
+    windowEnd,
+    bufferBefore,
+    bufferAfter,
+    preloadImage,
+  ]);
 
   const currentImage = images.get(currentFrame);
   const isCurrentReady = currentImage?.status === "ready";
