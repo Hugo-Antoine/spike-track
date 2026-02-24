@@ -56,8 +56,12 @@ export async function middleware(request: NextRequest) {
     return NextResponse.next();
   }
 
-  // Routes protégées (dashboard, annotate)
-  if (path.startsWith("/dashboard") || path.startsWith("/annotate")) {
+  // Routes protégées (dashboard, annotate, video-management)
+  if (
+    path.startsWith("/dashboard") ||
+    path.startsWith("/annotate") ||
+    path.startsWith("/video-management")
+  ) {
     if (!session) {
       return NextResponse.redirect(new URL("/login", request.url));
     }

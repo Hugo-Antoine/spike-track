@@ -2,11 +2,10 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Shield, Film, Users, Settings2 } from "lucide-react";
+import { Shield, Users, Settings2 } from "lucide-react";
 import { cn } from "~/lib/utils";
 
 const adminNav = [
-  { href: "/admin/video-management", label: "Vidéos", icon: Film },
   { href: "/admin/users", label: "Utilisateurs", icon: Users },
   { href: "/admin/config", label: "Configuration", icon: Settings2 },
 ];
