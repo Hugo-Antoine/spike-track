@@ -1,7 +1,15 @@
 "use client";
 
 import { useRouter, usePathname } from "next/navigation";
-import { Home, Shield, Video, LogOut, ChevronUp } from "lucide-react";
+import {
+  Home,
+  Video,
+  LogOut,
+  ChevronUp,
+  Film,
+  Users,
+  Settings2,
+} from "lucide-react";
 import {
   Sidebar,
   SidebarContent,
@@ -90,18 +98,44 @@ export function AppSidebar() {
               </SidebarMenuItem>
 
               {session?.user.role === "ADMIN" && (
-                <SidebarMenuItem>
-                  <SidebarMenuButton
-                    asChild
-                    isActive={pathname === "/admin"}
-                    onClick={() => router.push("/admin")}
-                  >
-                    <a>
-                      <Shield className="h-4 w-4" />
-                      <span>Gestion utilisateurs</span>
-                    </a>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
+                <>
+                  <SidebarMenuItem>
+                    <SidebarMenuButton
+                      asChild
+                      isActive={pathname.startsWith("/admin/video-management")}
+                      onClick={() => router.push("/admin/video-management")}
+                    >
+                      <a>
+                        <Film className="h-4 w-4" />
+                        <span>Vidéos</span>
+                      </a>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                  <SidebarMenuItem>
+                    <SidebarMenuButton
+                      asChild
+                      isActive={pathname.startsWith("/admin/users")}
+                      onClick={() => router.push("/admin/users")}
+                    >
+                      <a>
+                        <Users className="h-4 w-4" />
+                        <span>Utilisateurs</span>
+                      </a>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                  <SidebarMenuItem>
+                    <SidebarMenuButton
+                      asChild
+                      isActive={pathname.startsWith("/admin/config")}
+                      onClick={() => router.push("/admin/config")}
+                    >
+                      <a>
+                        <Settings2 className="h-4 w-4" />
+                        <span>Configuration</span>
+                      </a>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                </>
               )}
             </SidebarMenu>
           </SidebarGroupContent>
