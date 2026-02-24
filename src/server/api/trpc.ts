@@ -10,9 +10,12 @@
 import { initTRPC, TRPCError } from "@trpc/server";
 import superjson from "superjson";
 import { ZodError } from "zod";
+import { eq } from "drizzle-orm";
 
 import { auth } from "~/server/better-auth";
 import { db } from "~/server/db";
+import { user as userTable } from "~/server/db/schema";
+import { type Permission, ROLE_TEMPLATES } from "~/lib/permissions";
 
 /**
  * 1. CONTEXT
@@ -115,18 +118,57 @@ export const publicProcedure = t.procedure.use(timingMiddleware);
  */
 export const protectedProcedure = t.procedure
   .use(timingMiddleware)
-  .use(({ ctx, next }) => {
+  .use(async ({ ctx, next }) => {
     if (!ctx.session?.user) {
       throw new TRPCError({ code: "UNAUTHORIZED" });
     }
+
+    // Fetch permissions from DB
+    const dbUser = await ctx.db
+      .select({ permissions: userTable.permissions })
+      .from(userTable)
+      .where(eq(userTable.id, ctx.session.user.id))
+      .then((rows) => rows[0]);
+
     return next({
       ctx: {
         session: {
           ...ctx.session,
-          user: ctx.session.user as typeof ctx.session.user & {
-            role: "USER" | "ANNOTATOR" | "ADMIN";
+          user: {
+            ...(ctx.session.user as typeof ctx.session.user & {
+              role: "USER" | "ANNOTATOR" | "ADMIN";
+            }),
+            permissions: (dbUser?.permissions ?? []) as string[],
           },
         },
       },
     });
   });
+
+export function requirePermission(
+  ctx: {
+    session: {
+      user: {
+        role: "USER" | "ANNOTATOR" | "ADMIN";
+        permissions: string[];
+      };
+    };
+  },
+  permission: Permission,
+) {
+  // ADMIN bypasses all permission checks
+  if (ctx.session.user.role === "ADMIN") return;
+
+  // Check explicit user permissions
+  if (ctx.session.user.permissions.includes(permission)) return;
+
+  // Fallback: check default role template permissions (backwards compat)
+  const roleKey = ctx.session.user.role.toLowerCase();
+  const template = ROLE_TEMPLATES[roleKey];
+  if (template?.permissions.includes(permission)) return;
+
+  throw new TRPCError({
+    code: "FORBIDDEN",
+    message: `Permission requise : ${permission}`,
+  });
+}

@@ -45,6 +45,7 @@ export const user = pgTable("user", {
     .$type<"USER" | "ANNOTATOR" | "ADMIN">()
     .notNull()
     .default("USER"),
+  permissions: text("permissions").array().notNull().default([]),
   createdAt: timestamp("created_at")
     .$defaultFn(() => /* @__PURE__ */ new Date())
     .notNull(),
@@ -134,6 +135,7 @@ export const videos = createTable(
     cloudinaryPublicId: d.varchar({ length: 512 }),
     s3FramesPrefix: d.varchar({ length: 512 }),
     startTimeSeconds: real("start_time_seconds"),
+    endTimeSeconds: real("end_time_seconds"),
     totalFrames: d.integer().notNull(),
     fps: d.integer().notNull().default(30),
     width: d.integer().notNull(),
