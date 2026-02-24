@@ -7,6 +7,7 @@ import {
   VideoSegmentEditor,
   type Segment,
   type VideoSegmentEditorHandle,
+  type ExistingSegment,
   formatTime,
 } from "./VideoSegmentEditor";
 import { Button } from "~/components/ui/button";
@@ -47,15 +48,9 @@ export function VideoImporter() {
   const [sourceName, setSourceName] = useState("");
   const [currentSourceId, setCurrentSourceId] = useState<string | null>(null);
   const [segments, setSegments] = useState<Segment[]>([]);
-  const [existingSegments, setExistingSegments] = useState<
-    Array<{
-      id: string;
-      name: string;
-      startTimeSeconds: number | null;
-      endTimeSeconds: number | null;
-      status: string;
-    }>
-  >([]);
+  const [existingSegments, setExistingSegments] = useState<ExistingSegment[]>(
+    [],
+  );
   const [segmentsSort, setSegmentsSort] = useState<"asc" | "desc">("asc");
   const editorRef = useRef<VideoSegmentEditorHandle>(null);
 
@@ -335,6 +330,7 @@ export function VideoImporter() {
                 ref={editorRef}
                 videoUrl={videoUrl}
                 sourceName={sourceName}
+                existingSegments={existingSegments}
                 onSegmentsChange={setSegments}
               />
             ) : (

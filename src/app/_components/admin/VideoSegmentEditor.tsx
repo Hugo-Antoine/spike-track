@@ -40,10 +40,19 @@ export interface VideoSegmentEditorHandle {
   seekToTime: (time: number) => void;
 }
 
+export interface ExistingSegment {
+  id: string;
+  name: string;
+  startTimeSeconds: number | null;
+  endTimeSeconds: number | null;
+  status: string;
+}
+
 interface VideoSegmentEditorProps {
   videoUrl: string;
   sourceName: string;
   initialSegments?: Segment[];
+  existingSegments?: ExistingSegment[];
   onSegmentsChange: (segments: Segment[]) => void;
 }
 
@@ -62,7 +71,13 @@ export const VideoSegmentEditor = forwardRef<
   VideoSegmentEditorHandle,
   VideoSegmentEditorProps
 >(function VideoSegmentEditor(
-  { videoUrl, sourceName, initialSegments = [], onSegmentsChange },
+  {
+    videoUrl,
+    sourceName,
+    initialSegments = [],
+    existingSegments = [],
+    onSegmentsChange,
+  },
   ref,
 ) {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -198,7 +213,32 @@ export const VideoSegmentEditor = forwardRef<
 
       {/* Timeline */}
       <div className="relative h-10 overflow-hidden rounded bg-gray-800">
-        {/* Segments overlay */}
+        {/* Existing segments overlay */}
+        {existingSegments
+          .filter((seg) => !segments.some((s) => s.id === seg.id))
+          .map((seg) => {
+            const start = seg.startTimeSeconds ?? 0;
+            const end = seg.endTimeSeconds ?? 0;
+            const colorClass =
+              seg.status === "ready"
+                ? "border-emerald-400 bg-emerald-500/25"
+                : seg.status === "processing"
+                  ? "border-amber-400 bg-amber-500/25"
+                  : seg.status === "error"
+                    ? "border-red-400 bg-red-500/25"
+                    : "border-gray-400 bg-gray-500/20";
+            return (
+              <div
+                key={`existing-${seg.id}`}
+                className={`absolute top-0 h-full border-x ${colorClass}`}
+                style={{
+                  left: `${(start / duration) * 100}%`,
+                  width: `${((end - start) / duration) * 100}%`,
+                }}
+              />
+            );
+          })}
+        {/* New/pending segments overlay */}
         {segments.map((seg) => (
           <div
             key={seg.id}
