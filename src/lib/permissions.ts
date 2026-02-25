@@ -17,6 +17,8 @@ export const PERMISSIONS = [
   "admin:manage_config",
   // Queue
   "queue:request_video",
+  // Statistiques
+  "stats:view_global",
 ] as const;
 
 export type Permission = (typeof PERMISSIONS)[number];
@@ -36,6 +38,7 @@ export const PERMISSION_LABELS: Record<Permission, string> = {
   "admin:manage_roles": "Gérer rôles et permissions",
   "admin:manage_config": "Modifier config queue",
   "queue:request_video": "Demander la prochaine vidéo",
+  "stats:view_global": "Voir les statistiques globales",
 };
 
 export const PERMISSION_GROUPS: Record<string, Permission[]> = {
@@ -59,6 +62,7 @@ export const PERMISSION_GROUPS: Record<string, Permission[]> = {
     "admin:manage_config",
   ],
   Queue: ["queue:request_video"],
+  Statistiques: ["stats:view_global"],
 };
 
 export const ROLE_TEMPLATES: Record<
@@ -83,6 +87,7 @@ export const ROLE_TEMPLATES: Record<
       "video:create_segments",
       "video:launch_processing",
       "video:view_processing",
+      "stats:view_global",
     ],
   },
   full_access: {

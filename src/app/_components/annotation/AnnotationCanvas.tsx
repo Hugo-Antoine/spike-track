@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { Alert, AlertDescription } from "~/components/ui/alert";
 import { AlertCircle } from "lucide-react";
 import { MagnifyingGlass } from "./MagnifyingGlass";
@@ -33,6 +33,12 @@ export function AnnotationCanvas({
   isAnnotated: _isAnnotated,
 }: AnnotationCanvasProps) {
   const [hasError, setHasError] = useState(false);
+
+  // Reset error state when frame changes
+  useEffect(() => {
+    setHasError(false);
+  }, [frameNumber]);
+
   const [mousePos, setMousePos] = useState<{ x: number; y: number } | null>(
     null,
   );

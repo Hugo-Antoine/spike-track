@@ -20,6 +20,11 @@ import {
   CardTitle,
 } from "~/components/ui/card";
 import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "~/components/ui/collapsible";
+import {
   Table,
   TableBody,
   TableCell,
@@ -31,11 +36,18 @@ import { Badge } from "~/components/ui/badge";
 import { useToast } from "~/hooks/use-toast";
 import {
   Scissors,
-  Save,
   ChevronLeft,
+  ChevronDown,
   Video,
   Upload,
   ArrowUpDown,
+  Check,
+  CheckCircle2,
+  XCircle,
+  Clock,
+  Loader2,
+  Play,
+  Pencil,
 } from "lucide-react";
 
 type Step = "list" | "edit";
@@ -47,7 +59,7 @@ export function VideoImporter() {
   const [step, setStep] = useState<Step>("list");
   const [sourceName, setSourceName] = useState("");
   const [currentSourceId, setCurrentSourceId] = useState<string | null>(null);
-  const [segments, setSegments] = useState<Segment[]>([]);
+  const [, setSegments] = useState<Segment[]>([]);
   const [existingSegments, setExistingSegments] = useState<ExistingSegment[]>(
     [],
   );
@@ -59,6 +71,18 @@ export function VideoImporter() {
   const [s3Key, setS3Key] = useState<string | null>(null);
   const [uploadProgress, setUploadProgress] = useState<number>(0);
   const uploadComplete = s3Key !== null;
+
+  // Pending queue: segments added before source exists in DB
+  const pendingQueueRef = useRef<Segment[]>([]);
+
+  // Track sync state
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [lastSyncedAt, setLastSyncedAt] = useState<Date | null>(null);
+
+  // Debounce timers for segment name updates
+  const nameDebounceRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(
+    new Map(),
+  );
 
   // Queries
   const { data: sourceVideos, isLoading: isSourcesLoading } =
@@ -78,14 +102,49 @@ export function VideoImporter() {
     },
   });
 
-  const saveSegmentsMut = api.video.saveSegments.useMutation({
+  const createSegmentMut = api.video.createSegment.useMutation({
+    onSuccess: () => {
+      void utils.video.listSourceVideos.invalidate();
+    },
+    onError: (err) => {
+      toast({
+        title: "Erreur création segment",
+        description: err.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const updateSegmentNameMut = api.video.updateSegmentName.useMutation({
+    onError: (err) => {
+      toast({
+        title: "Erreur renommage",
+        description: err.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const deleteSegmentMut = api.video.deleteSegment.useMutation({
+    onSuccess: () => {
+      void utils.video.listSourceVideos.invalidate();
+    },
+    onError: (err) => {
+      toast({
+        title: "Erreur suppression",
+        description: err.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const launchProcessingMut = api.video.launchProcessing.useMutation({
     onSuccess: (data) => {
       void utils.video.listSourceVideos.invalidate();
       toast({
-        title: "Segments enregistrés",
-        description: `${data.segmentIds.length} segment(s) en attente de traitement.`,
+        title: "Traitement lancé",
+        description: `${data.launched} segment(s) en cours de traitement.`,
       });
-      handleReset();
     },
     onError: (err) => {
       toast({
@@ -104,6 +163,82 @@ export function VideoImporter() {
 
   // The video URL to use in the editor: objectUrl (instant) or presigned S3 URL
   const videoUrl = objectUrl ?? playbackData?.url;
+
+  // --- Auto-save: create segment in DB ---
+  const createSegmentInDb = useCallback(
+    async (segment: Segment, sourceId: string) => {
+      setIsSyncing(true);
+      try {
+        const result = await createSegmentMut.mutateAsync({
+          sourceVideoId: sourceId,
+          name: segment.name,
+          startTime: segment.startTime,
+          endTime: segment.endTime,
+        });
+        // Update the segment's dbId in state
+        setSegments((prev) =>
+          prev.map((s) =>
+            s.id === segment.id ? { ...s, dbId: result.id } : s,
+          ),
+        );
+        setLastSyncedAt(new Date());
+      } finally {
+        setIsSyncing(false);
+      }
+    },
+    [createSegmentMut],
+  );
+
+  // Flush pending queue when sourceId becomes available
+  const flushPendingQueue = useCallback(
+    async (sourceId: string) => {
+      const queue = [...pendingQueueRef.current];
+      pendingQueueRef.current = [];
+      for (const seg of queue) {
+        await createSegmentInDb(seg, sourceId);
+      }
+    },
+    [createSegmentInDb],
+  );
+
+  const handleSegmentAdded = useCallback(
+    (segment: Segment) => {
+      if (currentSourceId) {
+        void createSegmentInDb(segment, currentSourceId);
+      } else {
+        pendingQueueRef.current.push(segment);
+      }
+    },
+    [currentSourceId, createSegmentInDb],
+  );
+
+  const handleSegmentNameChanged = useCallback(
+    (dbId: string, name: string) => {
+      // Clear existing debounce for this segment
+      const existing = nameDebounceRef.current.get(dbId);
+      if (existing) clearTimeout(existing);
+
+      const timer = setTimeout(() => {
+        nameDebounceRef.current.delete(dbId);
+        updateSegmentNameMut.mutate({ segmentId: dbId, name });
+      }, 500);
+      nameDebounceRef.current.set(dbId, timer);
+    },
+    [updateSegmentNameMut],
+  );
+
+  const handleSegmentDeleted = useCallback(
+    (dbId: string) => {
+      // Clear any pending name debounce
+      const existing = nameDebounceRef.current.get(dbId);
+      if (existing) {
+        clearTimeout(existing);
+        nameDebounceRef.current.delete(dbId);
+      }
+      deleteSegmentMut.mutate({ segmentId: dbId });
+    },
+    [deleteSegmentMut],
+  );
 
   const handleFileSelected = useCallback((url: string, file: File) => {
     setObjectUrl(url);
@@ -124,9 +259,11 @@ export function VideoImporter() {
           s3Key: key,
         });
         setCurrentSourceId(source.id);
+        // Flush any segments that were queued
+        await flushPendingQueue(source.id);
       }
     },
-    [currentSourceId, sourceName, createSource],
+    [currentSourceId, sourceName, createSource, flushPendingQueue],
   );
 
   const handleUploadProgress = useCallback((percent: number) => {
@@ -152,6 +289,7 @@ export function VideoImporter() {
           .filter((seg) => seg.status === "pending")
           .map((seg) => ({
             id: seg.id,
+            dbId: seg.id,
             name: seg.name,
             startTime: seg.startTimeSeconds ?? 0,
             endTime: seg.endTimeSeconds ?? 0,
@@ -163,33 +301,14 @@ export function VideoImporter() {
     setStep("edit");
   };
 
-  const handleSave = async () => {
-    if (segments.length === 0) return;
-
-    // Ensure source exists in DB
-    let sourceId = currentSourceId;
-    if (!sourceId && s3Key && sourceName.trim()) {
-      const source = await createSource.mutateAsync({
-        name: sourceName.trim(),
-        s3Key,
-      });
-      sourceId = source.id;
-      setCurrentSourceId(source.id);
-    }
-
-    if (!sourceId) return;
-
-    saveSegmentsMut.mutate({
-      sourceVideoId: sourceId,
-      segments: segments.map((s) => ({
-        name: s.name,
-        startTime: s.startTime,
-        endTime: s.endTime,
-      })),
-    });
-  };
-
   const handleReset = () => {
+    // Clear all debounce timers
+    for (const timer of nameDebounceRef.current.values()) {
+      clearTimeout(timer);
+    }
+    nameDebounceRef.current.clear();
+    pendingQueueRef.current = [];
+
     if (objectUrl) URL.revokeObjectURL(objectUrl);
     setStep("list");
     setSourceName("");
@@ -199,6 +318,8 @@ export function VideoImporter() {
     setObjectUrl(null);
     setS3Key(null);
     setUploadProgress(0);
+    setIsSyncing(false);
+    setLastSyncedAt(null);
   };
 
   // --- Render ---
@@ -224,42 +345,207 @@ export function VideoImporter() {
         {isSourcesLoading ? (
           <p className="text-muted-foreground text-sm">Chargement...</p>
         ) : sourceVideos && sourceVideos.length > 0 ? (
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Nom</TableHead>
-                <TableHead className="w-24">Durée</TableHead>
-                <TableHead className="w-24">Résolution</TableHead>
-                <TableHead className="w-24">Segments</TableHead>
-                <TableHead className="w-24">Date</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {sourceVideos.map((sv) => (
-                <TableRow
-                  key={sv.id}
-                  className="cursor-pointer"
-                  onClick={() => handleOpenExisting(sv.id)}
-                >
-                  <TableCell className="font-medium">{sv.name}</TableCell>
-                  <TableCell className="text-muted-foreground text-sm">
-                    {sv.durationSeconds
-                      ? `${Math.floor(sv.durationSeconds / 60)}m${Math.floor(sv.durationSeconds % 60)}s`
-                      : "—"}
-                  </TableCell>
-                  <TableCell className="text-muted-foreground text-sm">
-                    {sv.width && sv.height ? `${sv.width}x${sv.height}` : "—"}
-                  </TableCell>
-                  <TableCell>
-                    <Badge variant="secondary">{sv.segmentCount}</Badge>
-                  </TableCell>
-                  <TableCell className="text-muted-foreground text-sm">
-                    {new Date(sv.createdAt).toLocaleDateString("fr-FR")}
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+          <div className="space-y-3">
+            {sourceVideos.map((sv) => {
+              const readyCount = sv.segments.filter(
+                (s) => s.status === "ready",
+              ).length;
+              const pendingCount = sv.segments.filter(
+                (s) => s.status === "pending",
+              ).length;
+              const processingCount = sv.segments.filter(
+                (s) => s.status === "processing",
+              ).length;
+              const errorCount = sv.segments.filter(
+                (s) => s.status === "error",
+              ).length;
+              const lastModified = sv.segments.reduce((latest, s) => {
+                const d = s.updatedAt ?? s.createdAt;
+                return d && d > latest ? d : latest;
+              }, sv.createdAt);
+
+              return (
+                <Collapsible key={sv.id}>
+                  <Card>
+                    <CollapsibleTrigger asChild>
+                      <div className="hover:bg-muted/50 cursor-pointer rounded-t-xl p-6 transition-colors select-none">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-3">
+                            <ChevronDown className="text-muted-foreground h-4 w-4 transition-transform [[data-state=open]_&]:rotate-180" />
+                            <div>
+                              <CardTitle className="text-base">
+                                {sv.name}
+                              </CardTitle>
+                              <div className="text-muted-foreground mt-1 flex items-center gap-3 text-xs">
+                                <span>
+                                  {new Date(sv.createdAt).toLocaleDateString(
+                                    "fr-FR",
+                                    {
+                                      day: "numeric",
+                                      month: "short",
+                                      year: "numeric",
+                                    },
+                                  )}
+                                </span>
+                                {sv.durationSeconds && (
+                                  <span>
+                                    {Math.floor(sv.durationSeconds / 60)}m
+                                    {Math.floor(sv.durationSeconds % 60)
+                                      .toString()
+                                      .padStart(2, "0")}
+                                    s
+                                  </span>
+                                )}
+                                {sv.width && sv.height && (
+                                  <span>
+                                    {sv.width}×{sv.height}
+                                  </span>
+                                )}
+                                {lastModified > sv.createdAt && (
+                                  <span>
+                                    modifié{" "}
+                                    {new Date(lastModified).toLocaleDateString(
+                                      "fr-FR",
+                                      {
+                                        day: "numeric",
+                                        month: "short",
+                                      },
+                                    )}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            {sv.segments.length === 0 && (
+                              <Badge variant="outline">Aucun segment</Badge>
+                            )}
+                            {readyCount > 0 && (
+                              <Badge variant="default">
+                                {readyCount} prêt
+                                {readyCount > 1 ? "s" : ""}
+                              </Badge>
+                            )}
+                            {processingCount > 0 && (
+                              <Badge variant="secondary">
+                                {processingCount} en cours
+                              </Badge>
+                            )}
+                            {pendingCount > 0 && (
+                              <Badge variant="outline">
+                                {pendingCount} en attente
+                              </Badge>
+                            )}
+                            {errorCount > 0 && (
+                              <Badge variant="destructive">
+                                {errorCount} erreur
+                                {errorCount > 1 ? "s" : ""}
+                              </Badge>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    </CollapsibleTrigger>
+                    <CollapsibleContent>
+                      <CardContent className="pt-0">
+                        <div className="mb-3 flex justify-end">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => handleOpenExisting(sv.id)}
+                          >
+                            <Pencil className="mr-1 h-3 w-3" />
+                            Éditer les segments
+                          </Button>
+                        </div>
+                        {sv.segments.length > 0 ? (
+                          <Table>
+                            <TableHeader>
+                              <TableRow>
+                                <TableHead>Segment</TableHead>
+                                <TableHead className="w-28">Statut</TableHead>
+                                <TableHead className="w-28">
+                                  Timecodes
+                                </TableHead>
+                                <TableHead className="w-20">Durée</TableHead>
+                                <TableHead className="w-24 text-right">
+                                  Frames
+                                </TableHead>
+                              </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                              {sv.segments
+                                .sort(
+                                  (a, b) =>
+                                    (a.startTimeSeconds ?? 0) -
+                                    (b.startTimeSeconds ?? 0),
+                                )
+                                .map((seg) => {
+                                  const start = seg.startTimeSeconds ?? 0;
+                                  const end = seg.endTimeSeconds ?? 0;
+                                  const dur = end - start;
+                                  const fmtTime = (s: number) => {
+                                    const m = Math.floor(s / 60);
+                                    const sec = Math.floor(s % 60);
+                                    return `${m}:${sec.toString().padStart(2, "0")}`;
+                                  };
+
+                                  return (
+                                    <TableRow key={seg.id}>
+                                      <TableCell className="font-medium">
+                                        {seg.name}
+                                      </TableCell>
+                                      <TableCell>
+                                        <div className="flex items-center gap-1.5">
+                                          {seg.status === "ready" ? (
+                                            <CheckCircle2 className="h-3.5 w-3.5 text-green-500" />
+                                          ) : seg.status === "error" ? (
+                                            <XCircle className="h-3.5 w-3.5 text-red-500" />
+                                          ) : seg.status === "processing" ? (
+                                            <Loader2 className="h-3.5 w-3.5 animate-spin text-blue-500" />
+                                          ) : (
+                                            <Clock className="h-3.5 w-3.5 text-gray-400" />
+                                          )}
+                                          <span className="text-sm">
+                                            {seg.status === "ready"
+                                              ? "Prêt"
+                                              : seg.status === "processing"
+                                                ? "En cours"
+                                                : seg.status === "error"
+                                                  ? "Erreur"
+                                                  : "En attente"}
+                                          </span>
+                                        </div>
+                                      </TableCell>
+                                      <TableCell className="font-mono text-xs">
+                                        {fmtTime(start)} → {fmtTime(end)}
+                                      </TableCell>
+                                      <TableCell className="font-mono text-xs">
+                                        {fmtTime(dur)}
+                                      </TableCell>
+                                      <TableCell className="text-right text-sm">
+                                        {seg.totalFrames > 0
+                                          ? seg.totalFrames.toLocaleString()
+                                          : "—"}
+                                      </TableCell>
+                                    </TableRow>
+                                  );
+                                })}
+                            </TableBody>
+                          </Table>
+                        ) : (
+                          <p className="text-muted-foreground py-4 text-center text-sm">
+                            Aucun segment découpé. Cliquez sur
+                            &quot;Éditer&quot; pour commencer.
+                          </p>
+                        )}
+                      </CardContent>
+                    </CollapsibleContent>
+                  </Card>
+                </Collapsible>
+              );
+            })}
+          </div>
         ) : (
           <div className="rounded-lg border p-8 text-center">
             <Video className="text-muted-foreground mx-auto mb-3 h-12 w-12" />
@@ -274,11 +560,6 @@ export function VideoImporter() {
 
   // Step: Edit segments
   if (step === "edit") {
-    const saveDisabled =
-      segments.length === 0 ||
-      (!uploadComplete && !currentSourceId) ||
-      saveSegmentsMut.isPending;
-
     return (
       <div className="space-y-6">
         <div className="flex items-center justify-between">
@@ -292,12 +573,36 @@ export function VideoImporter() {
                 Upload S3 : {uploadProgress}%
               </span>
             )}
-            <Button onClick={() => void handleSave()} disabled={saveDisabled}>
-              <Save className="mr-2 h-4 w-4" />
-              {saveSegmentsMut.isPending
-                ? "Enregistrement..."
-                : `Enregistrer ${segments.length} segment${segments.length !== 1 ? "s" : ""}`}
-            </Button>
+            {isSyncing ? (
+              <span className="text-muted-foreground flex items-center gap-1 text-xs">
+                <Loader2 className="h-3 w-3 animate-spin" />
+                Sauvegarde...
+              </span>
+            ) : lastSyncedAt ? (
+              <span className="text-muted-foreground flex items-center gap-1 text-xs">
+                <Check className="h-3 w-3" />
+                Sauvegardé
+              </span>
+            ) : null}
+            {currentSourceId &&
+              existingSegments.some((s) => s.status === "pending") && (
+                <Button
+                  size="sm"
+                  onClick={() =>
+                    launchProcessingMut.mutate({
+                      sourceVideoId: currentSourceId,
+                    })
+                  }
+                  disabled={launchProcessingMut.isPending}
+                >
+                  {launchProcessingMut.isPending ? (
+                    <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                  ) : (
+                    <Play className="mr-1 h-3 w-3" />
+                  )}
+                  Lancer le traitement
+                </Button>
+              )}
           </div>
         </div>
 
@@ -309,8 +614,7 @@ export function VideoImporter() {
             </CardTitle>
             <CardDescription>
               Marquez les segments à extraire. Utilisez A (IN), E (OUT), Z
-              (Ajouter). Les segments seront enregistrés en attente de
-              traitement.
+              (Ajouter). Les segments sont sauvegardés automatiquement.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -332,6 +636,9 @@ export function VideoImporter() {
                 sourceName={sourceName}
                 existingSegments={existingSegments}
                 onSegmentsChange={setSegments}
+                onSegmentAdded={handleSegmentAdded}
+                onSegmentNameChanged={handleSegmentNameChanged}
+                onSegmentDeleted={handleSegmentDeleted}
               />
             ) : (
               <p className="text-muted-foreground text-sm">

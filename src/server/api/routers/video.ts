@@ -163,6 +163,96 @@ export const videoRouter = createTRPCRouter({
 
   // --- Segment management ---
 
+  createSegment: protectedProcedure
+    .input(
+      z.object({
+        sourceVideoId: z.string().uuid(),
+        name: z.string().min(1),
+        startTime: z.number().min(0),
+        endTime: z.number().min(0),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      requirePermission(ctx, "video:create_segments");
+
+      const source = await ctx.db.query.sourceVideos.findFirst({
+        where: eq(sourceVideos.id, input.sourceVideoId),
+      });
+      if (!source) throw new TRPCError({ code: "NOT_FOUND" });
+
+      const segmentId = crypto.randomUUID();
+      const s3Prefix = `frames/${segmentId}/`;
+
+      const [segment] = await ctx.db
+        .insert(videos)
+        .values({
+          id: segmentId,
+          sourceVideoId: source.id,
+          name: input.name,
+          s3FramesPrefix: s3Prefix,
+          startTimeSeconds: input.startTime,
+          endTimeSeconds: input.endTime,
+          totalFrames: 0,
+          fps: 30,
+          width: 1280,
+          height: 720,
+          status: "pending",
+        })
+        .returning();
+
+      return segment!;
+    }),
+
+  updateSegmentName: protectedProcedure
+    .input(
+      z.object({
+        segmentId: z.string().uuid(),
+        name: z.string().min(1),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      requirePermission(ctx, "video:create_segments");
+
+      const segment = await ctx.db.query.videos.findFirst({
+        where: eq(videos.id, input.segmentId),
+      });
+      if (!segment) throw new TRPCError({ code: "NOT_FOUND" });
+      if (segment.status !== "pending") {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "Can only rename pending segments",
+        });
+      }
+
+      await ctx.db
+        .update(videos)
+        .set({ name: input.name })
+        .where(eq(videos.id, input.segmentId));
+
+      return { success: true };
+    }),
+
+  deleteSegment: protectedProcedure
+    .input(z.object({ segmentId: z.string().uuid() }))
+    .mutation(async ({ ctx, input }) => {
+      requirePermission(ctx, "video:create_segments");
+
+      const segment = await ctx.db.query.videos.findFirst({
+        where: eq(videos.id, input.segmentId),
+      });
+      if (!segment) throw new TRPCError({ code: "NOT_FOUND" });
+      if (segment.status !== "pending") {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "Can only delete pending segments",
+        });
+      }
+
+      await ctx.db.delete(videos).where(eq(videos.id, input.segmentId));
+
+      return { success: true };
+    }),
+
   saveSegments: protectedProcedure
     .input(
       z.object({
@@ -270,6 +360,44 @@ export const videoRouter = createTRPCRouter({
       };
     }),
 
+  launchSegmentProcessing: protectedProcedure
+    .input(z.object({ segmentId: z.string().uuid() }))
+    .mutation(async ({ ctx, input }) => {
+      requirePermission(ctx, "video:launch_processing");
+
+      const segment = await ctx.db.query.videos.findFirst({
+        where: eq(videos.id, input.segmentId),
+      });
+      if (!segment) throw new TRPCError({ code: "NOT_FOUND" });
+      if (segment.status !== "pending" && segment.status !== "error") {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Segment is not pending or in error",
+        });
+      }
+
+      const source = await ctx.db.query.sourceVideos.findFirst({
+        where: eq(sourceVideos.id, segment.sourceVideoId),
+      });
+      if (!source) throw new TRPCError({ code: "NOT_FOUND" });
+
+      await invokeLambdaAsync(env.LAMBDA_PROCESS_SEGMENT_ARN, {
+        sourceS3Key: source.s3Key,
+        segments: [
+          {
+            segmentId: segment.id,
+            s3FramesPrefix: segment.s3FramesPrefix,
+            startTime: segment.startTimeSeconds,
+            endTime: segment.endTimeSeconds,
+          },
+        ],
+        s3Bucket: env.S3_BUCKET_NAME,
+        databaseUrl: env.DATABASE_URL,
+      });
+
+      return { launched: 1 };
+    }),
+
   getProcessingStatus: protectedProcedure
     .input(z.object({ sourceVideoId: z.string().uuid() }))
     .query(async ({ ctx, input }) => {
@@ -285,6 +413,7 @@ export const videoRouter = createTRPCRouter({
         name: v.name,
         status: v.status,
         totalFrames: v.totalFrames,
+        processedFrames: v.processedFrames,
       }));
 
       const allReady =

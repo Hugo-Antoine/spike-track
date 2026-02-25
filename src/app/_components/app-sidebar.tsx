@@ -1,7 +1,18 @@
 "use client";
 
 import { useRouter, usePathname } from "next/navigation";
-import { Home, Video, LogOut, ChevronUp, Film, Settings2 } from "lucide-react";
+import {
+  Home,
+  Video,
+  LogOut,
+  ChevronUp,
+  Film,
+  Cpu,
+  Users,
+  Database,
+  Settings2,
+} from "lucide-react";
+import type { Permission } from "~/lib/permissions";
 import {
   Sidebar,
   SidebarContent,
@@ -31,10 +42,12 @@ export function AppSidebar() {
   const router = useRouter();
   const pathname = usePathname();
   const { data: session } = api.auth.getSession.useQuery();
-  const { data: progress } = api.annotation.getMyProgress.useQuery(undefined, {
-    enabled:
-      session?.user.role === "ANNOTATOR" || session?.user.role === "ADMIN",
-  });
+
+  const hasPerm = (perm: Permission) => {
+    if (!session) return false;
+    if (session.user.role === "ADMIN") return true;
+    return session.user.permissions.includes(perm);
+  };
 
   const handleLogout = async () => {
     await authClient.signOut();
@@ -89,7 +102,7 @@ export function AppSidebar() {
                 </SidebarMenuButton>
               </SidebarMenuItem>
 
-              {session?.user.role === "ADMIN" && (
+              {hasPerm("video:list_sources") && (
                 <SidebarMenuItem>
                   <SidebarMenuButton
                     asChild
@@ -104,53 +117,67 @@ export function AppSidebar() {
                 </SidebarMenuItem>
               )}
 
-              {session?.user.role === "ADMIN" && (
+              {hasPerm("video:view_processing") && (
                 <SidebarMenuItem>
                   <SidebarMenuButton
                     asChild
-                    isActive={pathname.startsWith("/admin")}
-                    onClick={() => router.push("/admin")}
+                    isActive={pathname === "/processing"}
+                    onClick={() => router.push("/processing")}
                   >
                     <a>
-                      <Settings2 className="h-4 w-4" />
-                      <span>Administration</span>
+                      <Cpu className="h-4 w-4" />
+                      <span>Traitement</span>
                     </a>
                   </SidebarMenuButton>
                 </SidebarMenuItem>
               )}
-            </SidebarMenu>
-          </SidebarGroupContent>
-        </SidebarGroup>
 
-        {progress?.current && (
-          <SidebarGroup>
-            <SidebarGroupLabel>Vidéo en cours</SidebarGroupLabel>
-            <SidebarGroupContent>
-              <SidebarMenu>
+              {hasPerm("admin:view_users") && (
                 <SidebarMenuItem>
                   <SidebarMenuButton
                     asChild
-                    isActive={
-                      pathname === `/annotate/${progress.current.videoId}`
-                    }
-                    onClick={() => {
-                      if (progress.current) {
-                        router.push(`/annotate/${progress.current.videoId}`);
-                      }
-                    }}
+                    isActive={pathname === "/admin/users"}
+                    onClick={() => router.push("/admin/users")}
                   >
                     <a>
-                      <Video className="h-4 w-4" />
-                      <span className="truncate">
-                        {progress.current.videoName}
-                      </span>
+                      <Users className="h-4 w-4" />
+                      <span>Utilisateurs</span>
                     </a>
                   </SidebarMenuButton>
                 </SidebarMenuItem>
-              </SidebarMenu>
-            </SidebarGroupContent>
-          </SidebarGroup>
-        )}
+              )}
+
+              {hasPerm("admin:manage_config") && (
+                <>
+                  <SidebarMenuItem>
+                    <SidebarMenuButton
+                      asChild
+                      isActive={pathname === "/admin/data"}
+                      onClick={() => router.push("/admin/data")}
+                    >
+                      <a>
+                        <Database className="h-4 w-4" />
+                        <span>Données</span>
+                      </a>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                  <SidebarMenuItem>
+                    <SidebarMenuButton
+                      asChild
+                      isActive={pathname === "/admin/config"}
+                      onClick={() => router.push("/admin/config")}
+                    >
+                      <a>
+                        <Settings2 className="h-4 w-4" />
+                        <span>Configuration</span>
+                      </a>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                </>
+              )}
+            </SidebarMenu>
+          </SidebarGroupContent>
+        </SidebarGroup>
       </SidebarContent>
 
       <SidebarFooter className="border-sidebar-border border-t p-4">

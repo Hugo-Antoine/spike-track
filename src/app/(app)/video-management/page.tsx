@@ -1,31 +1,19 @@
 "use client";
 
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "~/components/ui/tabs";
-import { Film, Cpu } from "lucide-react";
+import { Film } from "lucide-react";
 import { VideoImporter } from "~/app/_components/admin/VideoImporter";
-import { BatchProcessing } from "~/app/_components/admin/BatchProcessing";
 
-export default function AdminVideosPage() {
+export default function VideoManagementPage() {
   return (
-    <Tabs defaultValue="import" className="space-y-6">
-      <TabsList>
-        <TabsTrigger value="import" className="gap-2">
-          <Film className="h-4 w-4" />
-          Import & découpage
-        </TabsTrigger>
-        <TabsTrigger value="processing" className="gap-2">
-          <Cpu className="h-4 w-4" />
-          Traitement
-        </TabsTrigger>
-      </TabsList>
+    <div className="container mx-auto py-8">
+      <div className="mb-6 flex items-center gap-3">
+        <div className="bg-primary/10 flex h-10 w-10 items-center justify-center rounded-lg">
+          <Film className="text-primary h-5 w-5" />
+        </div>
+        <h1 className="text-2xl font-bold">Gestion vidéos</h1>
+      </div>
 
-      <TabsContent value="import">
-        <VideoImporter />
-      </TabsContent>
-
-      <TabsContent value="processing">
-        <BatchProcessing />
-      </TabsContent>
-    </Tabs>
+      <VideoImporter />
+    </div>
   );
 }

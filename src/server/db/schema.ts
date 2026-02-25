@@ -140,6 +140,7 @@ export const videos = createTable(
     fps: d.integer().notNull().default(30),
     width: d.integer().notNull(),
     height: d.integer().notNull(),
+    processedFrames: d.integer().notNull().default(0),
     status: d.varchar({ length: 50 }).notNull().default("ready"),
     createdAt: d
       .timestamp({ withTimezone: true })

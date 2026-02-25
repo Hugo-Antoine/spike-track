@@ -31,6 +31,7 @@ import {
 
 export interface Segment {
   id: string;
+  dbId?: string;
   name: string;
   startTime: number;
   endTime: number;
@@ -54,6 +55,9 @@ interface VideoSegmentEditorProps {
   initialSegments?: Segment[];
   existingSegments?: ExistingSegment[];
   onSegmentsChange: (segments: Segment[]) => void;
+  onSegmentAdded?: (segment: Segment) => void;
+  onSegmentNameChanged?: (dbId: string, name: string) => void;
+  onSegmentDeleted?: (dbId: string) => void;
 }
 
 export function formatTime(seconds: number): string {
@@ -77,6 +81,9 @@ export const VideoSegmentEditor = forwardRef<
     initialSegments = [],
     existingSegments = [],
     onSegmentsChange,
+    onSegmentAdded,
+    onSegmentNameChanged,
+    onSegmentDeleted,
   },
   ref,
 ) {
@@ -88,8 +95,9 @@ export const VideoSegmentEditor = forwardRef<
   const [markOut, setMarkOut] = useState<number | null>(null);
   const [segments, setSegments] = useState<Segment[]>(initialSegments);
   const [segmentCounter, setSegmentCounter] = useState(
-    initialSegments.length + 1,
+    Math.max(initialSegments.length, existingSegments.length) + 1,
   );
+  const [overlapWarning, setOverlapWarning] = useState(false);
 
   useEffect(() => {
     onSegmentsChange(segments);
@@ -127,6 +135,26 @@ export const VideoSegmentEditor = forwardRef<
     const end = Math.max(markIn, markOut);
     if (end - start < 0.1) return;
 
+    // Check overlap with editable segments
+    const overlapsEditable = segments.some(
+      (s) => start < s.endTime && end > s.startTime,
+    );
+    // Check overlap with existing segments (exclude ones already in editable list)
+    const editableIds = new Set(segments.map((s) => s.id));
+    const overlapsExisting = existingSegments
+      .filter((s) => !editableIds.has(s.id))
+      .some((s) => {
+        const sStart = s.startTimeSeconds ?? 0;
+        const sEnd = s.endTimeSeconds ?? 0;
+        return start < sEnd && end > sStart;
+      });
+
+    if (overlapsEditable || overlapsExisting) {
+      setOverlapWarning(true);
+      setTimeout(() => setOverlapWarning(false), 2000);
+      return;
+    }
+
     const newSegment: Segment = {
       id: crypto.randomUUID(),
       name: `${sourceName} - Segment ${segmentCounter}`,
@@ -138,14 +166,27 @@ export const VideoSegmentEditor = forwardRef<
     setSegmentCounter((c) => c + 1);
     setMarkIn(null);
     setMarkOut(null);
-  }, [markIn, markOut, sourceName, segmentCounter]);
+    onSegmentAdded?.(newSegment);
+  }, [
+    markIn,
+    markOut,
+    sourceName,
+    segmentCounter,
+    segments,
+    existingSegments,
+    onSegmentAdded,
+  ]);
 
   const removeSegment = (id: string) => {
+    const seg = segments.find((s) => s.id === id);
     setSegments((prev) => prev.filter((s) => s.id !== id));
+    if (seg?.dbId) onSegmentDeleted?.(seg.dbId);
   };
 
   const updateSegmentName = (id: string, name: string) => {
     setSegments((prev) => prev.map((s) => (s.id === id ? { ...s, name } : s)));
+    const seg = segments.find((s) => s.id === id);
+    if (seg?.dbId) onSegmentNameChanged?.(seg.dbId, name);
   };
 
   const seekToTime = useCallback((time: number) => {
@@ -332,6 +373,13 @@ export const VideoSegmentEditor = forwardRef<
           </Button>
         </div>
       </div>
+
+      {/* Overlap warning */}
+      {overlapWarning && (
+        <p className="text-sm font-medium text-red-500">
+          Ce segment chevauche un segment existant.
+        </p>
+      )}
 
       {/* Keyboard hints */}
       <p className="text-muted-foreground text-xs">

@@ -1,18 +1,33 @@
 "use client";
 
 import { api } from "~/trpc/react";
-import { SegmentImportProgress } from "./SegmentImportProgress";
 import { Button } from "~/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
 import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "~/components/ui/card";
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "~/components/ui/table";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "~/components/ui/collapsible";
 import { Badge } from "~/components/ui/badge";
+import { Progress } from "~/components/ui/progress";
 import { useToast } from "~/hooks/use-toast";
-import { Play, Zap } from "lucide-react";
+import {
+  Play,
+  Zap,
+  ChevronDown,
+  CheckCircle2,
+  XCircle,
+  Loader2,
+  Clock,
+} from "lucide-react";
 
 export function BatchProcessing() {
   const { toast } = useToast();
@@ -30,7 +45,7 @@ export function BatchProcessing() {
       void utils.video.listSourceVideos.invalidate();
       toast({
         title: "Traitement lancé",
-        description: `${data.launched} segments en ${data.batches} batch(es).`,
+        description: `${data.launched} segment(s) en cours de traitement.`,
       });
     },
     onError: (err) => {
@@ -42,15 +57,39 @@ export function BatchProcessing() {
     },
   });
 
-  // Filter sources that have non-ready segments
-  const sourcesWithWork = sourceVideos?.filter((sv) =>
-    sv.segments.some((s) => s.status !== "ready"),
+  const launchSegmentMut = api.video.launchSegmentProcessing.useMutation({
+    onSuccess: () => {
+      void utils.video.listSourceVideos.invalidate();
+      toast({ title: "Segment lancé" });
+    },
+    onError: (err) => {
+      toast({
+        title: "Erreur",
+        description: err.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  // All sources with segments
+  const sourcesWithSegments = sourceVideos?.filter(
+    (sv) => sv.segments.length > 0,
   );
 
-  // All sources with pending segments (for "launch all" button)
-  const sourcesWithPending = sourceVideos?.filter((sv) =>
-    sv.segments.some((s) => s.status === "pending"),
+  // Sources that have pending segments (for "launch all")
+  const sourcesWithPending = sourcesWithSegments?.filter((sv) =>
+    sv.segments.some((s) => s.status === "pending" || s.status === "error"),
   );
+
+  const totalPending =
+    sourcesWithPending?.reduce(
+      (sum, sv) =>
+        sum +
+        sv.segments.filter(
+          (s) => s.status === "pending" || s.status === "error",
+        ).length,
+      0,
+    ) ?? 0;
 
   const handleLaunchAll = () => {
     if (!sourcesWithPending?.length) return;
@@ -63,40 +102,42 @@ export function BatchProcessing() {
     return <p className="text-muted-foreground text-sm">Chargement...</p>;
   }
 
-  if (!sourcesWithWork?.length) {
+  if (!sourcesWithSegments?.length) {
     return (
       <div className="rounded-lg border p-8 text-center">
         <Zap className="text-muted-foreground mx-auto mb-3 h-12 w-12" />
         <p className="text-muted-foreground text-sm">
-          Aucun segment en attente de traitement.
+          Aucun segment à afficher.
         </p>
         <p className="text-muted-foreground text-xs">
-          Ajoutez des segments depuis l&apos;onglet &quot;Import &amp;
-          découpage&quot;.
+          Importez une vidéo et découpez des segments depuis la page Gestion
+          vidéos.
         </p>
       </div>
     );
   }
 
   return (
-    <div className="space-y-6">
-      {/* Global launch button */}
-      {sourcesWithPending && sourcesWithPending.length > 0 && (
+    <div className="space-y-4">
+      {totalPending > 0 && (
         <div className="flex items-center justify-between">
           <p className="text-muted-foreground text-sm">
-            {sourcesWithPending.length} vidéo(s) avec des segments en attente
+            {totalPending} segment(s) en attente de traitement
           </p>
           <Button onClick={handleLaunchAll} disabled={launchMut.isPending}>
-            <Play className="mr-2 h-4 w-4" />
-            {launchMut.isPending ? "Lancement..." : "Tout lancer"}
+            {launchMut.isPending ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : (
+              <Play className="mr-2 h-4 w-4" />
+            )}
+            Tout lancer
           </Button>
         </div>
       )}
 
-      {/* Per-source cards */}
-      {sourcesWithWork.map((sv) => {
+      {sourcesWithSegments.map((sv) => {
         const pendingCount = sv.segments.filter(
-          (s) => s.status === "pending",
+          (s) => s.status === "pending" || s.status === "error",
         ).length;
         const processingCount = sv.segments.filter(
           (s) => s.status === "processing",
@@ -104,61 +145,159 @@ export function BatchProcessing() {
         const readyCount = sv.segments.filter(
           (s) => s.status === "ready",
         ).length;
-        const errorCount = sv.segments.filter(
-          (s) => s.status === "error",
-        ).length;
-        const allReady =
-          sv.segments.length > 0 &&
-          sv.segments.every((s) => s.status === "ready");
-        const hasPending = pendingCount > 0;
+        const total = sv.segments.length;
 
         return (
-          <Card key={sv.id}>
-            <CardHeader>
-              <div className="flex items-center justify-between">
-                <div>
-                  <CardTitle className="text-base">{sv.name}</CardTitle>
-                  <CardDescription className="flex gap-2 pt-1">
-                    {pendingCount > 0 && (
-                      <Badge variant="outline">{pendingCount} en attente</Badge>
-                    )}
-                    {processingCount > 0 && (
-                      <Badge variant="secondary">
-                        {processingCount} en cours
-                      </Badge>
-                    )}
-                    {readyCount > 0 && (
-                      <Badge variant="default">{readyCount} prêts</Badge>
-                    )}
-                    {errorCount > 0 && (
-                      <Badge variant="destructive">{errorCount} erreurs</Badge>
-                    )}
-                  </CardDescription>
+          <Collapsible key={sv.id}>
+            <Card>
+              <CollapsibleTrigger asChild>
+                <div className="hover:bg-muted/50 cursor-pointer rounded-t-xl p-6 transition-colors select-none">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <ChevronDown className="text-muted-foreground h-4 w-4 transition-transform [[data-state=open]_&]:rotate-180" />
+                      <CardTitle className="text-base">{sv.name}</CardTitle>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {readyCount > 0 && (
+                        <Badge variant="default">
+                          {readyCount} prêt{readyCount > 1 ? "s" : ""}
+                        </Badge>
+                      )}
+                      {processingCount > 0 && (
+                        <Badge variant="secondary">
+                          {processingCount} en cours
+                        </Badge>
+                      )}
+                      {pendingCount > 0 && (
+                        <Badge variant="outline">
+                          {pendingCount} en attente
+                        </Badge>
+                      )}
+                      {readyCount === total && (
+                        <Badge variant="default">
+                          <CheckCircle2 className="mr-1 h-3 w-3" />
+                          Terminé
+                        </Badge>
+                      )}
+                    </div>
+                  </div>
                 </div>
-                {hasPending && (
-                  <Button
-                    size="sm"
-                    onClick={() => launchMut.mutate({ sourceVideoId: sv.id })}
-                    disabled={launchMut.isPending}
-                  >
-                    <Play className="mr-1 h-3 w-3" />
-                    Lancer
-                  </Button>
-                )}
-              </div>
-            </CardHeader>
-            <CardContent>
-              <SegmentImportProgress
-                segments={sv.segments.map((s) => ({
-                  id: s.id,
-                  name: s.name,
-                  status: s.status,
-                  totalFrames: s.totalFrames,
-                }))}
-                allReady={allReady}
-              />
-            </CardContent>
-          </Card>
+              </CollapsibleTrigger>
+              <CollapsibleContent>
+                <CardContent className="pt-0">
+                  {pendingCount > 0 && (
+                    <div className="mb-4 flex justify-end">
+                      <Button
+                        size="sm"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          launchMut.mutate({ sourceVideoId: sv.id });
+                        }}
+                        disabled={launchMut.isPending}
+                      >
+                        {launchMut.isPending ? (
+                          <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                        ) : (
+                          <Play className="mr-1 h-3 w-3" />
+                        )}
+                        Lancer tous les pending ({pendingCount})
+                      </Button>
+                    </div>
+                  )}
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Segment</TableHead>
+                        <TableHead className="w-28">Statut</TableHead>
+                        <TableHead className="w-48">Progression</TableHead>
+                        <TableHead className="w-32 text-right">
+                          Frames
+                        </TableHead>
+                        <TableHead className="w-28 text-right">
+                          Action
+                        </TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {sv.segments.map((seg) => {
+                        const pct =
+                          seg.status === "processing" && seg.totalFrames > 0
+                            ? Math.round(
+                                (seg.processedFrames / seg.totalFrames) * 100,
+                              )
+                            : seg.status === "ready"
+                              ? 100
+                              : 0;
+
+                        return (
+                          <TableRow key={seg.id}>
+                            <TableCell className="font-medium">
+                              {seg.name}
+                            </TableCell>
+                            <TableCell>
+                              <div className="flex items-center gap-1.5">
+                                {seg.status === "ready" ? (
+                                  <CheckCircle2 className="h-3.5 w-3.5 text-green-500" />
+                                ) : seg.status === "error" ? (
+                                  <XCircle className="h-3.5 w-3.5 text-red-500" />
+                                ) : seg.status === "processing" ? (
+                                  <Loader2 className="h-3.5 w-3.5 animate-spin text-blue-500" />
+                                ) : (
+                                  <Clock className="h-3.5 w-3.5 text-gray-400" />
+                                )}
+                                <span className="text-sm">
+                                  {seg.status === "ready"
+                                    ? "Prêt"
+                                    : seg.status === "processing"
+                                      ? "En cours"
+                                      : seg.status === "error"
+                                        ? "Erreur"
+                                        : "En attente"}
+                                </span>
+                              </div>
+                            </TableCell>
+                            <TableCell>
+                              <div className="flex items-center gap-2">
+                                <Progress value={pct} className="h-2 flex-1" />
+                                <span className="text-muted-foreground w-10 text-right text-xs">
+                                  {pct}%
+                                </span>
+                              </div>
+                            </TableCell>
+                            <TableCell className="text-right text-sm">
+                              {seg.status === "processing"
+                                ? `${seg.processedFrames} / ${seg.totalFrames}`
+                                : seg.totalFrames > 0
+                                  ? seg.totalFrames.toLocaleString()
+                                  : "—"}
+                            </TableCell>
+                            <TableCell className="text-right">
+                              {(seg.status === "pending" ||
+                                seg.status === "error") && (
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() =>
+                                    launchSegmentMut.mutate({
+                                      segmentId: seg.id,
+                                    })
+                                  }
+                                  disabled={launchSegmentMut.isPending}
+                                >
+                                  <Play className="mr-1 h-3 w-3" />
+                                  Lancer
+                                </Button>
+                              )}
+                            </TableCell>
+                          </TableRow>
+                        );
+                      })}
+                    </TableBody>
+                  </Table>
+                </CardContent>
+              </CollapsibleContent>
+            </Card>
+          </Collapsible>
         );
       })}
     </div>

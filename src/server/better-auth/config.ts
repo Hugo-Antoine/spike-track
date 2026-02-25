@@ -18,6 +18,15 @@ export const auth = betterAuth({
       redirectURI: "http://localhost:3000/api/auth/callback/google",
     },
   },
+  user: {
+    additionalFields: {
+      role: {
+        type: "string",
+        defaultValue: "USER",
+        input: false,
+      },
+    },
+  },
 });
 
 export type Session = typeof auth.$Infer.Session;
