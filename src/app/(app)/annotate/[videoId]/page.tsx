@@ -17,7 +17,9 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "~/components/ui/alert-dialog";
-import { Lock } from "lucide-react";
+import { AlertCircle, Lock, ShieldCheck } from "lucide-react";
+import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
+import { Skeleton } from "~/components/ui/skeleton";
 import { useToast } from "~/hooks/use-toast";
 import { useAnnotationBuffer } from "~/hooks/use-annotation-buffer";
 import { useAnnotationData } from "~/hooks/use-annotation-data";
@@ -53,8 +55,11 @@ export default function AnnotatePage({
         router.replace(`/annotate/${progressData.current.videoId}`);
       }
     }
-    // Set read-only if video is validated
-    if (progressData?.validated.some((v) => v.id === videoId)) {
+    // Set read-only if video is completed or validated
+    if (
+      progressData?.validated.some((v) => v.id === videoId) ||
+      progressData?.completed.some((v) => v.id === videoId)
+    ) {
       setIsReadOnly(true);
     }
   }, [progressData, videoId, router]);
@@ -72,10 +77,11 @@ export default function AnnotatePage({
   } = useAnnotationData(videoId);
 
   // Queries — all fire in parallel (no `enabled` gating)
-  const { data: video } = api.video.getById.useQuery(
-    { id: videoId },
-    { staleTime: Infinity },
-  );
+  const {
+    data: video,
+    isError: isVideoError,
+    error: videoError,
+  } = api.video.getById.useQuery({ id: videoId }, { staleTime: Infinity });
 
   const { data: stats } = api.annotation.getStats.useQuery({ videoId });
 
@@ -89,6 +95,16 @@ export default function AnnotatePage({
   const isAnnotated = currentAnnotation !== null;
 
   const allAnnotated = nextUnannotated?.completed === true;
+
+  // Jump to first unannotated frame on initial load
+  const [hasInitialized, setHasInitialized] = useState(false);
+  useEffect(() => {
+    if (hasInitialized || !nextUnannotated || isReadOnly) return;
+    if (!nextUnannotated.completed && nextUnannotated.frameNumber) {
+      setCurrentFrame(nextUnannotated.frameNumber);
+    }
+    setHasInitialized(true);
+  }, [nextUnannotated, hasInitialized, isReadOnly]);
 
   const handleSaveAndNavigate = async () => {
     await manualSave();
@@ -223,6 +239,24 @@ export default function AnnotatePage({
     },
   });
 
+  const validateMut = api.annotation.validateVideo.useMutation({
+    onSuccess: () => {
+      void utils.annotation.getMyProgress.invalidate();
+      toast({
+        title: "Vidéo validée",
+        description: "Les annotations sont maintenant verrouillées.",
+      });
+      router.push("/dashboard");
+    },
+    onError: (err) => {
+      toast({
+        title: "Erreur",
+        description: err.message,
+        variant: "destructive",
+      });
+    },
+  });
+
   // Derive status for the badge
   const videoStatus:
     | "validated"
@@ -236,11 +270,59 @@ export default function AnnotatePage({
         ? "all_annotated"
         : "in_progress";
 
-  // Loading
+  // Error state
+  if (isVideoError) {
+    const isNotFound = videoError?.data?.code === "NOT_FOUND";
+    return (
+      <div className="flex min-h-[60vh] items-center justify-center p-4">
+        <Card className="w-full max-w-md">
+          <CardHeader className="text-center">
+            <AlertCircle className="text-destructive mx-auto mb-2 h-10 w-10" />
+            <CardTitle>
+              {isNotFound ? "Vidéo introuvable" : "Erreur de chargement"}
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4 text-center">
+            <p className="text-muted-foreground text-sm">
+              {isNotFound
+                ? "Cette vidéo n'existe pas ou a été supprimée."
+                : "Impossible de charger la vidéo. Veuillez réessayer."}
+            </p>
+            <div className="flex justify-center gap-3">
+              <Button
+                variant="outline"
+                onClick={() => router.push("/dashboard")}
+              >
+                Retour au dashboard
+              </Button>
+              {!isNotFound && (
+                <Button onClick={() => window.location.reload()}>
+                  Réessayer
+                </Button>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  // Loading skeleton
   if (!video || isAnnotationsLoading || !stats) {
     return (
-      <div className="flex min-h-screen items-center justify-center">
-        <p>Loading...</p>
+      <div className="bg-background flex h-[calc(100dvh-2.5rem)] flex-col">
+        <div className="flex items-center gap-3 border-b px-4 py-2">
+          <Skeleton className="h-5 w-48" />
+          <Skeleton className="ml-auto h-5 w-24" />
+        </div>
+        <div className="min-h-0 flex-1 p-4">
+          <Skeleton className="h-full w-full rounded-lg" />
+        </div>
+        <div className="flex items-center justify-center gap-2 border-t px-4 py-3">
+          <Skeleton className="h-9 w-20" />
+          <Skeleton className="h-9 w-20" />
+          <Skeleton className="h-9 w-20" />
+        </div>
       </div>
     );
   }
@@ -254,10 +336,25 @@ export default function AnnotatePage({
     <>
       <div className="bg-background flex h-[calc(100dvh-2.5rem)] flex-col">
         {/* Read-only banner */}
-        {isReadOnly && (
+        {videoStatus === "validated" && (
           <div className="flex items-center justify-center gap-2 bg-yellow-100 px-4 py-1.5 text-sm text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-200">
             <Lock className="h-3.5 w-3.5" />
             Vidéo validée — consultation seule
+          </div>
+        )}
+        {videoStatus === "completed" && (
+          <div className="flex items-center justify-center gap-2 bg-blue-100 px-4 py-1.5 text-sm text-blue-800 dark:bg-blue-900/30 dark:text-blue-200">
+            <span>Revoyez vos annotations puis validez</span>
+            <Button
+              size="sm"
+              variant="default"
+              className="ml-2 h-6 gap-1 px-3 text-xs"
+              onClick={() => validateMut.mutate({ videoId })}
+              disabled={validateMut.isPending}
+            >
+              <ShieldCheck className="h-3.5 w-3.5" />
+              {validateMut.isPending ? "..." : "Valider"}
+            </Button>
           </div>
         )}
 
@@ -300,6 +397,7 @@ export default function AnnotatePage({
             }
             onAnnotate={handleAnnotate}
             isAnnotated={isAnnotated}
+            isReadOnly={isReadOnly}
           />
         </div>
 
@@ -311,6 +409,11 @@ export default function AnnotatePage({
           onGoToNextUnannotated={handleGoToNextUnannotated}
           onNoBall={handleNoBall}
           disabled={false}
+          isReadOnly={isReadOnly}
+          fps={video.fps}
+          currentFrame={currentFrame}
+          totalFrames={video.totalFrames}
+          onSetFrame={setCurrentFrame}
         />
       </div>
 
