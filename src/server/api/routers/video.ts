@@ -54,7 +54,8 @@ export const videoRouter = createTRPCRouter({
       requirePermission(ctx, "video:upload");
 
       const ext = input.filename.replace(/.*\./, ".");
-      const s3Key = `sources/${crypto.randomUUID()}${ext}`;
+      const uuid = crypto.randomUUID();
+      const s3Key = `uploads/${uuid}${ext}`;
 
       if (input.fileSize < MULTIPART_THRESHOLD) {
         // Single presigned PUT
@@ -114,20 +115,34 @@ export const videoRouter = createTRPCRouter({
     .input(
       z.object({
         name: z.string().min(1),
-        s3Key: z.string().min(1),
+        s3Key: z.string().min(1), // uploads/{uuid}.mp4
       }),
     )
     .mutation(async ({ ctx, input }) => {
       requirePermission(ctx, "video:create_source");
 
-      // No ffprobe — metadata will be filled by Lambda later
+      // Derive the final sources/ key from the uploads/ key
+      const targetKey = input.s3Key.replace(/^uploads\//, "sources/");
+
+      // Store with the final sources/ key
       const [source] = await ctx.db
         .insert(sourceVideos)
         .values({
           name: input.name,
-          s3Key: input.s3Key,
+          s3Key: targetKey,
         })
         .returning();
+
+      // Invoke faststart Lambda to move uploads/ → sources/ with moov atom optimization
+      // Fire-and-forget: don't block source creation if Lambda invocation fails
+      invokeLambdaAsync(env.LAMBDA_FASTSTART_ARN, {
+        uploadKey: input.s3Key,
+        targetKey,
+        databaseUrl: env.DATABASE_URL,
+        sourceVideoId: source!.id,
+      }).catch((err) => {
+        console.error("Failed to invoke faststart Lambda:", err);
+      });
 
       return source!;
     }),
@@ -165,12 +180,17 @@ export const videoRouter = createTRPCRouter({
 
   createSegment: protectedProcedure
     .input(
-      z.object({
-        sourceVideoId: z.string().uuid(),
-        name: z.string().min(1),
-        startTime: z.number().min(0),
-        endTime: z.number().min(0),
-      }),
+      z
+        .object({
+          sourceVideoId: z.string().uuid(),
+          name: z.string().min(1),
+          startTime: z.number().min(0),
+          endTime: z.number().min(0),
+        })
+        .refine((d) => d.endTime > d.startTime, {
+          message: "Le temps de fin doit être supérieur au temps de début",
+          path: ["endTime"],
+        }),
     )
     .mutation(async ({ ctx, input }) => {
       requirePermission(ctx, "video:create_segments");
@@ -258,11 +278,16 @@ export const videoRouter = createTRPCRouter({
       z.object({
         sourceVideoId: z.string().uuid(),
         segments: z.array(
-          z.object({
-            name: z.string().min(1),
-            startTime: z.number().min(0),
-            endTime: z.number().min(0),
-          }),
+          z
+            .object({
+              name: z.string().min(1),
+              startTime: z.number().min(0),
+              endTime: z.number().min(0),
+            })
+            .refine((d) => d.endTime > d.startTime, {
+              message: "Le temps de fin doit être supérieur au temps de début",
+              path: ["endTime"],
+            }),
         ),
       }),
     )
