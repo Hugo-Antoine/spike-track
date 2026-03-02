@@ -23,6 +23,8 @@ export const env = createEnv({
     S3_BUCKET_NAME: z.string(),
     CLOUDFRONT_DOMAIN: z.string(),
     LAMBDA_PROCESS_SEGMENT_ARN: z.string(),
+    LAMBDA_FASTSTART_ARN: z.string(),
+    DISCORD_WEBHOOK_URL: z.string().url().optional(),
   },
 
   /**
@@ -51,6 +53,8 @@ export const env = createEnv({
     S3_BUCKET_NAME: process.env.S3_BUCKET_NAME,
     CLOUDFRONT_DOMAIN: process.env.CLOUDFRONT_DOMAIN,
     LAMBDA_PROCESS_SEGMENT_ARN: process.env.LAMBDA_PROCESS_SEGMENT_ARN,
+    LAMBDA_FASTSTART_ARN: process.env.LAMBDA_FASTSTART_ARN,
+    DISCORD_WEBHOOK_URL: process.env.DISCORD_WEBHOOK_URL,
     NEXT_PUBLIC_CLOUDFRONT_DOMAIN: process.env.NEXT_PUBLIC_CLOUDFRONT_DOMAIN,
   },
   /**

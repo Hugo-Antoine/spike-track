@@ -18,6 +18,7 @@ import {
   invokeLambdaAsync,
 } from "~/lib/s3";
 import { env } from "~/env";
+import { reportError } from "~/lib/error-reporting";
 
 const MULTIPART_THRESHOLD = 200 * 1024 * 1024; // 200 MB
 const PART_SIZE = 100 * 1024 * 1024; // 100 MB per part
@@ -141,7 +142,11 @@ export const videoRouter = createTRPCRouter({
         databaseUrl: env.DATABASE_URL,
         sourceVideoId: source!.id,
       }).catch((err) => {
-        console.error("Failed to invoke faststart Lambda:", err);
+        reportError({
+          message: "Failed to invoke faststart Lambda",
+          context: `sourceVideoId=${source!.id}`,
+          error: err,
+        });
       });
 
       return source!;
